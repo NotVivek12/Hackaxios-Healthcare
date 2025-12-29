@@ -58,6 +58,7 @@
     "react-tsparticles": "^2.11.1",
     "recharts": "^3.0.2",
     "simple-peer": "^9.11.1",
+    "socket": "^1.1.50",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
     "tailwind-merge": "^3.3.1",
