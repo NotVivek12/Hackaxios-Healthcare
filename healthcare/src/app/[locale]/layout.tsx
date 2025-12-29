@@ -17,7 +17,6 @@ export async function generateMetadata() {
             template: "%s | AI-HealthCare",
         },
         description: "AI-powered healthcare platform with symptom checking, telemedicine, and multilingual support.",
-        metadataBase: new URL('https://ai-healthcare.vercel.app'),
     };
 }
 

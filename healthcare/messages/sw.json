@@ -1,0 +1,24 @@
+{
+  "common": {
+    "welcome": "Karibu",
+    "loading": "Inapakia...",
+    "error": "Hitilafu imetokea",
+    "save": "Hifadhi",
+    "cancel": "Ghairi",
+    "submit": "Wasilisha",
+    "close": "Funga"
+  },
+  "navigation": {
+    "home": "Nyumbani",
+    "dashboard": "Dashibodi",
+    "profile": "Wasifu",
+    "settings": "Mipangilio"
+  },
+  "auth": {
+    "login": "Ingia",
+    "logout": "Toka",
+    "register": "Jisajili",
+    "email": "Barua pepe",
+    "password": "Nenosiri"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "common": {
+    "welcome": "Bem-vindo",
+    "loading": "Carregando...",
+    "error": "Ocorreu um erro",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "submit": "Enviar",
+    "close": "Fechar"
+  },
+  "navigation": {
+    "home": "Início",
+    "dashboard": "Painel",
+    "profile": "Perfil",
+    "settings": "Configurações"
+  },
+  "auth": {
+    "login": "Entrar",
+    "logout": "Sair",
+    "register": "Registrar",
+    "email": "E-mail",
+    "password": "Senha"
+  }
+}
