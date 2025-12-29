@@ -1,4 +1,5 @@
 {
+
     "Index": {
         "title": "Hello world!"
     },
@@ -15,6 +16,7 @@
         "providerAssignment": "Provider Assignment",
         "management": "Management"
     },
+
     "Home": {
         "hero": {
             "title": "AI-Powered Healthcare for Everyone",
@@ -372,6 +374,10 @@
         "loading": "Loading admin dashboard...",
         "welcomeBack": "Welcome back, {name}",
         "dashboardOverview": "Platform administration and monitoring dashboard",
+
+        "recentUsers": "Recent Users",
+        "noUsersFound": "No users found",
+
         "stats": {
             "totalUsers": "Total Users",
             "totalProviders": "Providers",
@@ -382,14 +388,52 @@
             "completed": "completed",
             "alerts": "alerts"
         },
+
         "tabs": {
             "overview": "Overview",
             "users": "Users",
             "analytics": "Analytics",
             "security": "Security",
             "settings": "Settings"
+        },
+
+        "userTable": {
+            "name": "Name",
+            "email": "Email",
+            "role": "Role",
+            "status": "Status",
+            "dateJoined": "Date Joined",
+            "actions": "Actions"
+        },
+
+        "recentConsultations": "Recent Consultations",
+
+        "consultationTable": {
+            "patient": "Patient",
+            "provider": "Provider",
+            "date": "Date",
+            "status": "Status",
+            "actions": "Actions"
+        },
+
+        "noConsultationsFound": "No consultations found",
+
+        "systemStatus": "System Status",
+        "currentSystemStatus": "Current system health and operational metrics",
+
+        "status": {
+            "apiHealth": "API Health",
+            "databaseHealth": "Database Health",
+            "storageSystems": "Storage Systems",
+            "aiServices": "AI Services",
+
+            "operational": "Operational",
+            "degradedPerformance": "Degraded performance"
         }
+
+
     },
+
     "HealthAnalytics": {
         "loading": "Loading analytics data...",
         "errorLoading": "Error Loading Data",

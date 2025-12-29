@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useTranslations } from 'next-intl';
-import { Settings, X, Moon, Sun, Bell, Shield, User, Palette, Monitor } from 'lucide-react';
+import { Settings, X, Bell, Shield, User, Palette } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { motion, AnimatePresence } from '@/lib/framer-motion';
@@ -16,7 +16,6 @@ interface SettingsModalProps {
 }
 
 interface UserSettings {
-    theme: 'light' | 'dark' | 'system';
     language: string;
     notifications: {
         email: boolean;
@@ -46,7 +45,6 @@ interface UserSettings {
 }
 
 const defaultSettings: UserSettings = {
-    theme: 'system',
     language: 'en',
     notifications: {
         email: true,
@@ -77,11 +75,8 @@ const defaultSettings: UserSettings = {
 
 export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     const t = useTranslations('Settings');
-    const { theme, setTheme } = useTheme();
-    const [settings, setSettings] = useState<UserSettings>({
-        ...defaultSettings,
-        theme,
-    });
+    const { resolvedTheme } = useTheme();
+    const [settings, setSettings] = useState<UserSettings>(defaultSettings);
     const [activeTab, setActiveTab] = useState<'general' | 'notifications' | 'privacy' | 'profile' | 'accessibility'>('general');
     const [hasChanges, setHasChanges] = useState(false);
     const [isClient, setIsClient] = useState(false);
@@ -130,15 +125,11 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     const merged: UserSettings = {
                         ...prev,
                         ...(data.preferences ? {
-                            theme: (data.preferences.theme ?? prev.theme) as UserSettings['theme'],
                             notifications: { ...prev.notifications, ...data.preferences.notifications },
                             accessibility: { ...prev.accessibility, ...data.preferences.accessibility },
                         } : {}),
                         ...(data.profile ? { profile: { ...prev.profile, ...data.profile } } : {}),
                     };
-                    if (data.preferences?.theme) {
-                        setTheme(data.preferences.theme);
-                    }
                     return merged;
                 });
             } catch {
@@ -154,9 +145,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 const parsed = JSON.parse(savedSettings) as Partial<UserSettings>;
                 setSettings(prev => {
                     const merged = { ...prev, ...parsed } as UserSettings;
-                    if (parsed.theme) {
-                        setTheme(parsed.theme);
-                    }
                     return merged;
                 });
             } catch (error) {
@@ -167,11 +155,9 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
         return () => {
             cancelled = true;
         };
-    }, [isClient, setTheme]);
+    }, [isClient]);
 
-    useEffect(() => {
-        setSettings(prev => (prev.theme === theme ? prev : { ...prev, theme }));
-    }, [theme]);
+
 
     const updateSettings = (path: string, value: unknown) => {
         setSettings(prev => {
@@ -202,9 +188,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 localStorage.setItem('userSettings', JSON.stringify(settings));
             }
 
-            // Apply theme instantly
-            setTheme(settings.theme);
-
             // Accessibility classes
             if (typeof document !== 'undefined') {
                 const root = document.documentElement;
@@ -231,7 +214,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
     const resetSettings = () => {
         setSettings(defaultSettings);
-        setTheme(defaultSettings.theme);
         setHasChanges(true);
     };
 
@@ -316,28 +298,6 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                         <div>
                                             <h3 className="text-lg font-semibold mb-4">{t('appearance')}</h3>
                                             <div className="space-y-4">
-                                                <div>
-                                                    <label className="block text-sm font-medium mb-2">{t('theme')}</label>
-                                                    <div className="flex space-x-2">
-                            {(['light', 'dark', 'system'] as const).map((opt) => (
-                                                            <button
-                                                                key={opt}
-                                onClick={() => { updateSettings('theme', opt); setTheme(opt); }}
-                                                                className={cn(
-                                                                    "flex items-center px-4 py-2 rounded-lg border transition-colors",
-                                                                    settings.theme === opt
-                                                                        ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
-                                                                        : "border-gray-300 hover:border-gray-400 dark:border-gray-700 dark:hover:border-gray-600"
-                                                                )}
-                                                            >
-                                                                {opt === 'light' && <Sun className="h-4 w-4 mr-2" />}
-                                                                {opt === 'dark' && <Moon className="h-4 w-4 mr-2" />}
-                                                                {opt === 'system' && <Monitor className="h-4 w-4 mr-2" />}
-                                                                {t(opt as 'light' | 'dark' | 'system')}
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                </div>
                                                 <div>
                                                     <ReliableLanguageSwitcher variant="select" />
                                                 </div>

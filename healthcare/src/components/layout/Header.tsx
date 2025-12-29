@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useSession, signOut } from 'next-auth/react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/navigation';
-import { Menu, X, Heart, User, LogOut, ChevronDown, Sun, Moon, Settings } from 'lucide-react';
+import { Menu, X, Heart, User, LogOut, ChevronDown, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { motion, AnimatePresence } from '@/lib/framer-motion';
 import NotificationsDropdown from '@/components/ui/notifications-dropdown';
@@ -18,7 +18,7 @@ export default function Header() {
     const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const { data: session } = useSession();
-    const { resolvedTheme, setTheme } = useTheme();
+    const { resolvedTheme } = useTheme();
     const t = useTranslations('Header');
     const [isClient, setIsClient] = useState(false);
     const [scrolled, setScrolled] = useState(false);
@@ -36,9 +36,6 @@ export default function Header() {
         ? 'text-white/80 hover:text-white hover:bg-white/10'
         : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80';
     const logoTextClass = isDark ? 'text-white group-hover:text-blue-300' : 'text-slate-900 group-hover:text-blue-600';
-    const handleThemeToggle = () => {
-        setTheme(isDark ? 'light' : 'dark');
-    };
 
     // This helps prevent hydration errors by ensuring rendering happens only client-side
     useEffect(() => {
@@ -198,15 +195,6 @@ export default function Header() {
                                         onClose={() => setIsNotificationsOpen(false)}
                                         triggerClassName={iconButtonClass}
                                     />
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className={iconButtonClass}
-                                        onClick={handleThemeToggle}
-                                        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-                                    >
-                                        {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-                                    </Button>
                                     <Button
                                         variant="ghost"
                                         size="icon"

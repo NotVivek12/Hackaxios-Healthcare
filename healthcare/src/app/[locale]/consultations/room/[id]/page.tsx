@@ -77,9 +77,9 @@ export default function ConsultationRoomPage() {
             <ParticlesBackground />
             <MedicalConsultationRoom
                 consultationId={id}
-                userId={session.user.id || ''}
-                userName={session.user.name || 'User'}
-                userRole={session.user.role || 'patient'}
+                userId={session.user?.id || ''}
+                userName={session.user?.name || 'User'}
+                userRole={session.user?.role || 'patient'}
                 consultation={consultation}
             />
         </div>
