@@ -31,13 +31,13 @@ export default function SignInPage() {
             // Pre-store session information to make subsequent loads faster
             localStorage.setItem('userSession', JSON.stringify({ email, timestamp: Date.now() }));
 
-            const callbackUrl = searchParams?.get('callbackUrl') || '/dashboard';
+            // Get callback URL - if it's just /dashboard, we'll handle redirect ourselves
+            const callbackParam = searchParams?.get('callbackUrl');
 
             const result = await signIn('credentials', {
                 redirect: false,
                 email,
                 password,
-                callbackUrl,
             });
 
             if (result?.error) {
@@ -52,17 +52,22 @@ export default function SignInPage() {
 
             // Set a small delay for feedback before redirecting
             setTimeout(() => {
-                // If callbackUrl is absolute, let the browser handle it; else use locale-aware router
-                try {
-                    const url = new URL(callbackUrl, window.location.origin);
-                    const isSameOrigin = url.origin === window.location.origin;
-                    if (isSameOrigin) {
-                        router.push(url.pathname + url.search + url.hash);
-                    } else {
-                        window.location.href = url.toString();
+                // Use the callback URL if provided and valid, otherwise go to home which will redirect to proper dashboard
+                if (callbackParam && callbackParam !== '/dashboard' && callbackParam !== '/') {
+                    try {
+                        const url = new URL(callbackParam, window.location.origin);
+                        const isSameOrigin = url.origin === window.location.origin;
+                        if (isSameOrigin) {
+                            window.location.href = url.pathname + url.search + url.hash;
+                        } else {
+                            window.location.href = '/';
+                        }
+                    } catch {
+                        window.location.href = '/';
                     }
-                } catch {
-                    router.push(callbackUrl || '/dashboard');
+                } else {
+                    // Let middleware redirect to appropriate dashboard based on role
+                    window.location.href = '/';
                 }
             }, 500);
         } catch (err) {

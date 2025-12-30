@@ -55,11 +55,15 @@ export default async function middleware(request: NextRequest) {
     
     // Get the locale from the path
     const pathSegments = pathname.split('/').filter(Boolean);
-    const locale = pathSegments[0] || 'en';
-    const pathWithoutLocale = '/' + pathSegments.slice(1).join('/');
+    const locales = ['en', 'es', 'fr', 'hi', 'pt', 'sw', 'ar'];
+    const firstSegment = pathSegments[0] || '';
+    const locale = locales.includes(firstSegment) ? firstSegment : 'en';
+    const pathWithoutLocale = locales.includes(firstSegment) 
+        ? '/' + pathSegments.slice(1).join('/')
+        : '/' + pathSegments.join('/');
 
-    // Check authentication for protected routes
-    if (!isPublicRoute && pathWithoutLocale !== '' && pathWithoutLocale !== '/') {
+    // REQUIRE AUTHENTICATION FOR ALL ROUTES (including home page)
+    if (!isPublicRoute) {
         try {
             const token = await getToken({ 
                 req: request, 
@@ -76,6 +80,14 @@ export default async function middleware(request: NextRequest) {
             // Check role-based access
             const userRole = token.role as string;
 
+            // Redirect from home page to appropriate dashboard
+            if (pathWithoutLocale === '' || pathWithoutLocale === '/') {
+                const dashboardUrl = userRole === 'provider' 
+                    ? `/${locale}/provider/dashboard`
+                    : `/${locale}/dashboard`;
+                return NextResponse.redirect(new URL(dashboardUrl, request.url));
+            }
+
             // Provider trying to access patient-only routes (like /dashboard)
             if (userRole === 'provider' && patientOnlyRoutes.some(route => pathWithoutLocale === route || pathWithoutLocale.startsWith(route + '/'))) {
                 const providerDashboard = new URL(`/${locale}/provider/dashboard`, request.url);
@@ -89,6 +101,9 @@ export default async function middleware(request: NextRequest) {
             }
         } catch (error) {
             console.error('Auth check error:', error);
+            // On error, redirect to signin
+            const signInUrl = new URL(`/${locale}/auth/signin`, request.url);
+            return NextResponse.redirect(signInUrl);
         }
     }
 

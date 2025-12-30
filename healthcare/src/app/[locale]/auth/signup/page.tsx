@@ -87,7 +87,8 @@ export default function SignUpPage() {
             });
 
             setTimeout(() => {
-                router.push(selectedRole === 'provider' ? '/provider/dashboard' : '/dashboard');
+                // Let middleware handle role-based redirect
+                window.location.href = '/';
             }, 800);
         } catch (err) {
             console.error('Registration error:', err);
