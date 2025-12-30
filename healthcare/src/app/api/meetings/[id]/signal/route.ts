@@ -59,7 +59,7 @@ async function verifyMeetingAccess(meetingId: string, userId: string, userRole: 
 
 export async function GET(
     request: NextRequest,
-    { params }: { params: { id: string } }
+    { params }: { params: Promise<{ id: string }> }
 ) {
     try {
         const session = await getServerSession(authOptions);
@@ -67,7 +67,7 @@ export async function GET(
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
-        const meetingId = params.id;
+        const { id: meetingId } = await params;
         const { meeting, isAuthorized } = await verifyMeetingAccess(
             meetingId, 
             session.user.id, 
@@ -126,7 +126,7 @@ export async function GET(
 
 export async function POST(
     request: NextRequest,
-    { params }: { params: { id: string } }
+    { params }: { params: Promise<{ id: string }> }
 ) {
     try {
         const session = await getServerSession(authOptions);
@@ -134,7 +134,7 @@ export async function POST(
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
-        const meetingId = params.id;
+        const { id: meetingId } = await params;
         const data = await request.json();
         
         const { meeting, isAuthorized } = await verifyMeetingAccess(
