@@ -68,7 +68,11 @@ export default async function middleware(request: NextRequest) {
     // Get auth token
     let token = null;
     try {
-        token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET });
+        token = await getToken({ 
+            req: request, 
+            secret: process.env.NEXTAUTH_SECRET,
+            secureCookie: process.env.NODE_ENV === 'production'
+        });
     } catch (error) {
         console.error('Token error:', error);
     }

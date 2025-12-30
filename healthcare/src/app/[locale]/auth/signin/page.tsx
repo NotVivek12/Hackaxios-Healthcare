@@ -52,22 +52,27 @@ export default function SignInPage() {
 
             // Set a small delay for feedback before redirecting
             setTimeout(() => {
-                // Use the callback URL if provided and valid, otherwise go to home which will redirect to proper dashboard
-                if (callbackParam && callbackParam !== '/dashboard' && callbackParam !== '/') {
-                    try {
-                        const url = new URL(callbackParam, window.location.origin);
-                        const isSameOrigin = url.origin === window.location.origin;
-                        if (isSameOrigin) {
-                            window.location.href = url.pathname + url.search + url.hash;
-                        } else {
+                // For production, use window.location.href for more reliable redirects
+                if (process.env.NODE_ENV === 'production') {
+                    window.location.href = '/dashboard';
+                } else {
+                    // Use the callback URL if provided and valid, otherwise go to home which will redirect to proper dashboard
+                    if (callbackParam && callbackParam !== '/dashboard' && callbackParam !== '/') {
+                        try {
+                            const url = new URL(callbackParam, window.location.origin);
+                            const isSameOrigin = url.origin === window.location.origin;
+                            if (isSameOrigin) {
+                                window.location.href = url.pathname + url.search + url.hash;
+                            } else {
+                                window.location.href = '/';
+                            }
+                        } catch {
                             window.location.href = '/';
                         }
-                    } catch {
+                    } else {
+                        // Let middleware redirect to appropriate dashboard based on role
                         window.location.href = '/';
                     }
-                } else {
-                    // Let middleware redirect to appropriate dashboard based on role
-                    window.location.href = '/';
                 }
             }, 500);
         } catch (err) {
