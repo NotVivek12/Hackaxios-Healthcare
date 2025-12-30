@@ -25,6 +25,15 @@ export const EnhancedVideoCall = ({
     consultationStarted,
     consultationStatus
 }: EnhancedVideoCallProps) => {
+    // Debug logging
+    console.log('🔍 EnhancedVideoCall Props:', { 
+        consultationId, 
+        userId, 
+        userName, 
+        isProvider, 
+        consultationStarted, 
+        consultationStatus 
+    });
     const [localStream, setLocalStream] = useState<MediaStream | null>(null);
     const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
     const [isMuted, setIsMuted] = useState(false);
@@ -419,7 +428,10 @@ export const EnhancedVideoCall = ({
                                         {connectionState === 'connecting' ? 'Connecting...' : 'Waiting for participant...'}
                                     </p>
                                     <p className="text-gray-300">
-                                        {isProvider ? 'Waiting for patient to join' : 'Waiting for doctor to join'}
+                                        Waiting for {isProvider ? 'patient' : 'doctor'} to join
+                                    </p>
+                                    <p className="text-xs text-gray-400 mt-2">
+                                        You are: {userName} ({isProvider ? 'Provider' : 'Patient'})
                                     </p>
                                 </div>
                             ) : (
