@@ -2,142 +2,114 @@ import createMiddleware from 'next-intl/middleware';
 import { NextRequest, NextResponse } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 
-// Create the next-intl middleware with more permissive config
+// Create the next-intl middleware
 const intlMiddleware = createMiddleware({
-    // A list of all locales that are supported
     locales: ['en', 'es', 'fr', 'hi', 'pt', 'sw', 'ar'],
-
-    // Used when no locale matches
     defaultLocale: 'en',
-
-    // Add localePrefix to always enforce locale in URL
     localePrefix: 'always',
-
-    // Detect locale from headers and cookies
     localeDetection: true
 });
 
-// Public routes that don't require authentication
-const publicRoutes = [
+// Pages that anyone can access (no login required)
+const publicPages = [
+    '/',  // Home/landing page
     '/auth/signin',
     '/auth/signup',
-    '/api/auth',
 ];
 
-// Routes that require specific roles
-const providerOnlyRoutes = ['/provider'];
-const patientOnlyRoutes = ['/dashboard']; // Only patient dashboard, not /meetings
-const sharedRoutes = ['/meetings', '/consultations']; // Both roles can access
+// Pages only for doctors/providers
+const providerOnlyPages = [
+    '/provider',
+    '/provider/dashboard',
+    '/provider/patients',
+];
 
-// Simple wrapper to handle any custom logic before passing to next-intl middleware
+// Pages only for patients
+const patientOnlyPages = [
+    '/dashboard',
+    '/meetings/schedule',
+    '/symptom-checker',
+    '/health-records',
+];
+
 export default async function middleware(request: NextRequest) {
-    // Get the pathname
     const { pathname } = request.nextUrl;
 
-    // Create a log of the request for debugging
-    console.log(`Middleware processing: ${pathname}`);
-
-    // Skip middleware for API routes, static files, and other excluded paths
+    // Skip for API, static files, etc.
     if (
         pathname.startsWith('/api/') ||
-        pathname.includes('/api/auth') ||
         pathname.startsWith('/_next') ||
         pathname.startsWith('/static') ||
-        pathname.includes('.') || // Files with extensions
-        pathname === '/static-fallback.html' ||
-        pathname === '/static-test'
+        pathname.includes('.') ||
+        pathname === '/favicon.ico'
     ) {
         return NextResponse.next();
     }
 
-    // Check if it's a public route (signin/signup)
-    const isPublicRoute = publicRoutes.some(route => pathname.includes(route));
-    
-    // Get the locale from the path
+    // Get locale info
     const pathSegments = pathname.split('/').filter(Boolean);
     const locales = ['en', 'es', 'fr', 'hi', 'pt', 'sw', 'ar'];
     const firstSegment = pathSegments[0] || '';
     const locale = locales.includes(firstSegment) ? firstSegment : 'en';
     const pathWithoutLocale = locales.includes(firstSegment) 
         ? '/' + pathSegments.slice(1).join('/')
-        : '/' + pathSegments.join('/');
+        : pathname;
 
-    // REQUIRE AUTHENTICATION FOR ALL ROUTES (including home page)
-    if (!isPublicRoute) {
-        try {
-            const token = await getToken({ 
-                req: request, 
-                secret: process.env.NEXTAUTH_SECRET 
-            });
+    // Normalize empty path
+    const normalizedPath = pathWithoutLocale === '' ? '/' : pathWithoutLocale;
 
-            if (!token) {
-                // Redirect to signin if not authenticated
-                const signInUrl = new URL(`/${locale}/auth/signin`, request.url);
-                signInUrl.searchParams.set('callbackUrl', pathname);
-                return NextResponse.redirect(signInUrl);
-            }
+    // Check if this is a public page
+    const isPublicPage = publicPages.includes(normalizedPath);
 
-            // Check role-based access
-            const userRole = token.role as string;
+    // Check if page requires specific role
+    const isProviderPage = providerOnlyPages.some(page => normalizedPath.startsWith(page));
+    const isPatientPage = patientOnlyPages.some(page => normalizedPath.startsWith(page));
 
-            // Redirect from home page to appropriate dashboard
-            if (pathWithoutLocale === '' || pathWithoutLocale === '/') {
-                const dashboardUrl = userRole === 'provider' 
-                    ? `/${locale}/provider/dashboard`
-                    : `/${locale}/dashboard`;
-                return NextResponse.redirect(new URL(dashboardUrl, request.url));
-            }
-
-            // Provider trying to access patient-only routes (like /dashboard)
-            if (userRole === 'provider' && patientOnlyRoutes.some(route => pathWithoutLocale === route || pathWithoutLocale.startsWith(route + '/'))) {
-                const providerDashboard = new URL(`/${locale}/provider/dashboard`, request.url);
-                return NextResponse.redirect(providerDashboard);
-            }
-
-            // Patient trying to access provider-only routes
-            if (userRole === 'patient' && providerOnlyRoutes.some(route => pathWithoutLocale.startsWith(route))) {
-                const patientDashboard = new URL(`/${locale}/dashboard`, request.url);
-                return NextResponse.redirect(patientDashboard);
-            }
-        } catch (error) {
-            console.error('Auth check error:', error);
-            // On error, redirect to signin
-            const signInUrl = new URL(`/${locale}/auth/signin`, request.url);
-            return NextResponse.redirect(signInUrl);
-        }
+    // Get auth token
+    let token = null;
+    try {
+        token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET });
+    } catch (error) {
+        console.error('Token error:', error);
     }
 
-    // If authenticated user tries to access auth pages, redirect to appropriate dashboard
-    if (isPublicRoute) {
-        try {
-            const token = await getToken({ 
-                req: request, 
-                secret: process.env.NEXTAUTH_SECRET 
-            });
+    const isLoggedIn = !!token;
+    const userRole = token?.role as string || 'patient';
 
-            if (token) {
-                const userRole = token.role as string;
-                const dashboardUrl = userRole === 'provider' 
-                    ? `/${locale}/provider/dashboard`
-                    : `/${locale}/dashboard`;
-                return NextResponse.redirect(new URL(dashboardUrl, request.url));
-            }
-        } catch (error) {
-            console.error('Auth redirect error:', error);
+    // PUBLIC PAGES: Anyone can access
+    if (isPublicPage) {
+        // If user is on signin/signup and already logged in, redirect to their dashboard
+        if (isLoggedIn && (normalizedPath === '/auth/signin' || normalizedPath === '/auth/signup')) {
+            const dashboardUrl = userRole === 'provider' 
+                ? `/${locale}/provider/dashboard`
+                : `/${locale}/dashboard`;
+            return NextResponse.redirect(new URL(dashboardUrl, request.url));
         }
+        // Otherwise let them view the page (including home page for everyone)
+        return intlMiddleware(request);
     }
 
-    // For all other routes, use the intl middleware
+    // PROTECTED PAGES: Must be logged in
+    if (!isLoggedIn) {
+        const signInUrl = new URL(`/${locale}/auth/signin`, request.url);
+        signInUrl.searchParams.set('callbackUrl', pathname);
+        return NextResponse.redirect(signInUrl);
+    }
+
+    // PROVIDER-ONLY PAGES: Redirect patients away
+    if (isProviderPage && userRole !== 'provider') {
+        return NextResponse.redirect(new URL(`/${locale}/dashboard`, request.url));
+    }
+
+    // PATIENT-ONLY PAGES: Redirect providers away
+    if (isPatientPage && userRole === 'provider') {
+        return NextResponse.redirect(new URL(`/${locale}/provider/dashboard`, request.url));
+    }
+
+    // All checks passed, proceed
     return intlMiddleware(request);
 }
 
 export const config = {
-    // Match all routes except Next.js specific routes and API routes
-    matcher: [
-        // Match all paths except:
-        // - API routes (/api/...)
-        // - Next.js internals (_next/...)
-        // - Static files (including favicon.ico, images, etc)
-    '/((?!api|_next|_vercel|static-fallback\\.html|static-test|favicon.ico|.*\\.(?:jpg|jpeg|gif|png|svg|webp)).*)'
-    ]
+    matcher: ['/((?!api|_next|_vercel|favicon.ico|.*\\.(?:jpg|jpeg|gif|png|svg|webp)).*)']
 };
