@@ -82,6 +82,10 @@ export default function ConsultationRoomPage() {
                 userRole={session.user?.role || 'patient'}
                 consultation={consultation}
             />
+            {/* Debug info */}
+            <div className="fixed top-4 right-4 bg-black/80 text-white p-2 rounded text-xs z-50">
+                Role: {session.user?.role || 'patient'} | Name: {session.user?.name}
+            </div>
         </div>
     );
 }

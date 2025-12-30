@@ -39,6 +39,7 @@ export const MedicalConsultationRoom = ({
     const [consultationStatus, setConsultationStatus] = useState('waiting');
 
     const isProvider = userRole === 'provider';
+    console.log('🔍 MedicalConsultationRoom:', { userRole, isProvider, userName });
     const navigationItems: NavigationItem[] = [
         { id: 'video', icon: '🎥', label: 'Video' },
         { id: 'notes', icon: '📝', label: 'Notes' },

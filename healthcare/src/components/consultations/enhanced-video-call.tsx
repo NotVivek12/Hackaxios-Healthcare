@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { FadeIn, ScaleIn } from '@/components/animations/motion-effects';
 
@@ -25,69 +25,337 @@ export const EnhancedVideoCall = ({
     consultationStarted,
     consultationStatus
 }: EnhancedVideoCallProps) => {
-    const [stream, setStream] = useState<MediaStream | null>(null);
+    // Debug logging
+    console.log('🔍 EnhancedVideoCall Props:', { 
+        consultationId, 
+        userId, 
+        userName, 
+        isProvider, 
+        consultationStarted, 
+        consultationStatus 
+    });
+    const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+    const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
     const [isMuted, setIsMuted] = useState(false);
     const [isVideoOff, setIsVideoOff] = useState(false);
     const [isScreenSharing, setIsScreenSharing] = useState(false);
-    const connectionQuality = 'excellent';
+    const [connectionQuality, setConnectionQuality] = useState<'excellent' | 'good' | 'poor'>('excellent');
     const [recordingActive, setRecordingActive] = useState(false);
     const [participantConnected, setParticipantConnected] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
 
-    const myVideo = useRef<HTMLVideoElement>(null);
-    const participantVideo = useRef<HTMLVideoElement>(null);
+    const localVideo = useRef<HTMLVideoElement>(null);
+    const remoteVideo = useRef<HTMLVideoElement>(null);
+    const peerConnection = useRef<RTCPeerConnection | null>(null);
+    const signalingInterval = useRef<NodeJS.Timeout | null>(null);
+    const hasCreatedAnswer = useRef<boolean>(false);
 
-    // Initialize media stream
-    useEffect(() => {
-        let isMounted = true;
-        let localStream: MediaStream | null = null;
+    // WebRTC Configuration with multiple STUN servers for better connectivity
+    const rtcConfig: RTCConfiguration = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.stunprotocol.org:3478' }
+        ],
+        iceCandidatePoolSize: 10,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require'
+    };
 
-        const getMediaStream = async () => {
-            try {
-                const mediaStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: 1280, height: 720, frameRate: 30 },
-                    audio: { echoCancellation: true, noiseSuppression: true }
+    // Initialize local media stream
+    const initializeMedia = useCallback(async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                    width: { ideal: 1280 }, 
+                    height: { ideal: 720 },
+                    frameRate: { ideal: 30 }
+                },
+                audio: { 
+                    echoCancellation: true, 
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
+
+            setLocalStream(stream);
+            if (localVideo.current) {
+                localVideo.current.srcObject = stream;
+            }
+
+            return stream;
+        } catch (err) {
+            console.error('Error accessing media devices:', err);
+            setError('Could not access camera or microphone. Please check your permissions.');
+            throw err;
+        }
+    }, []);
+
+    // Create peer connection
+    const createPeerConnection = useCallback((stream: MediaStream) => {
+        console.log('🔗 Creating peer connection...');
+        const pc = new RTCPeerConnection(rtcConfig);
+
+        // Add local stream tracks
+        stream.getTracks().forEach(track => {
+            console.log(`➕ Adding ${track.kind} track to peer connection`);
+            pc.addTrack(track, stream);
+        });
+
+        // Handle remote stream
+        pc.ontrack = (event) => {
+            console.log('🎥 Received remote track:', event.track.kind);
+            const [remoteStream] = event.streams;
+            console.log('🎥 Setting remote stream with tracks:', remoteStream.getTracks().length);
+            setRemoteStream(remoteStream);
+            if (remoteVideo.current) {
+                remoteVideo.current.srcObject = remoteStream;
+                console.log('🎥 Remote video element updated');
+            }
+            setParticipantConnected(true);
+        };
+
+        // Handle ICE candidates
+        pc.onicecandidate = async (event) => {
+            if (event.candidate) {
+                console.log('🧊 Sending ICE candidate:', event.candidate.type);
+                try {
+                    await fetch(`/api/meetings/${consultationId}/signal`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            type: 'ice-candidate',
+                            candidate: event.candidate.toJSON()
+                        })
+                    });
+                } catch (err) {
+                    console.error('❌ Error sending ICE candidate:', err);
+                }
+            } else {
+                console.log('🧊 ICE gathering complete');
+            }
+        };
+
+        // Handle connection state changes
+        pc.onconnectionstatechange = () => {
+            console.log('🔗 Connection state changed:', pc.connectionState);
+            setConnectionState(pc.connectionState as any);
+            
+            switch (pc.connectionState) {
+                case 'connected':
+                    console.log('✅ Peer connection established!');
+                    setConnectionQuality('excellent');
+                    setParticipantConnected(true);
+                    break;
+                case 'connecting':
+                    console.log('🔄 Connecting to peer...');
+                    setConnectionQuality('good');
+                    break;
+                case 'disconnected':
+                case 'failed':
+                    console.log('❌ Peer connection failed/disconnected');
+                    setConnectionQuality('poor');
+                    setParticipantConnected(false);
+                    break;
+            }
+        };
+
+        // Handle ICE connection state
+        pc.oniceconnectionstatechange = () => {
+            console.log('🧊 ICE connection state:', pc.iceConnectionState);
+        };
+
+        // Handle signaling state
+        pc.onsignalingstatechange = () => {
+            console.log('📡 Signaling state:', pc.signalingState);
+        };
+
+        return pc;
+    }, [consultationId]);
+
+    // Start signaling process
+    const startSignaling = useCallback(async () => {
+        if (!localStream || !consultationStarted) return;
+
+        try {
+            setConnectionState('connecting');
+            
+            // Create peer connection for both provider and patient
+            const pc = createPeerConnection(localStream);
+            peerConnection.current = pc;
+
+            // Check if we should create offer (doctor initiates)
+            if (isProvider) {
+                console.log('👨‍⚕️ Doctor creating offer...');
+                const offer = await pc.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: true
+                });
+                
+                console.log('📤 Setting local description (offer)');
+                await pc.setLocalDescription(offer);
+
+                console.log('📤 Sending offer to signaling server');
+                const response = await fetch(`/api/meetings/${consultationId}/signal`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type: 'offer',
+                        offer: offer
+                    })
                 });
 
-                if (!isMounted) {
-                    mediaStream.getTracks().forEach(track => track.stop());
+                const data = await response.json();
+                console.log('📤 Offer sent, response:', data);
+                
+                if (data.answer) {
+                    console.log('📥 Received immediate answer');
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+            } else {
+                console.log('🧑‍🦱 Patient peer connection ready, waiting for offer from doctor...');
+            }
+
+            // Start polling for signaling messages
+            startSignalingPolling();
+
+        } catch (err) {
+            console.error('Error starting signaling:', err);
+            setError('Failed to establish connection');
+        }
+    }, [localStream, consultationStarted, isProvider, consultationId, createPeerConnection]);
+
+    // Poll for signaling messages
+    const startSignalingPolling = useCallback(() => {
+        if (signalingInterval.current) {
+            clearInterval(signalingInterval.current);
+        }
+
+        signalingInterval.current = setInterval(async () => {
+            try {
+                // First, get current state including ICE candidates
+                const response = await fetch(`/api/meetings/${consultationId}/signal`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'poll' })
+                });
+                const data = await response.json();
+
+                if (!peerConnection.current) {
+                    console.log('⏳ Peer connection not ready yet, waiting...');
                     return;
                 }
 
-                localStream = mediaStream;
-                setStream(mediaStream);
-                if (myVideo.current) {
-                    myVideo.current.srcObject = mediaStream;
-                }
-            } catch (err) {
-                console.error('Error accessing media devices:', err);
-                setError('Could not access camera or microphone. Please check your permissions.');
-            }
-        };
+                console.log('🔄 Signaling poll response:', data, 'signalingState:', peerConnection.current.signalingState);
 
-        getMediaStream();
+                // Handle incoming offer (patient receives) - only if we haven't processed an offer yet
+                if (!isProvider && data.offer && !hasCreatedAnswer.current && peerConnection.current.signalingState === 'stable') {
+                    console.log('📥 Patient receiving offer from doctor');
+                    hasCreatedAnswer.current = true; // Prevent duplicate answer creation
+                    try {
+                        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
+                        
+                        console.log('📤 Creating answer');
+                        const answer = await peerConnection.current.createAnswer();
+                        await peerConnection.current.setLocalDescription(answer);
+                        
+                        // Send answer back
+                        await fetch(`/api/meetings/${consultationId}/signal`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                type: 'answer',
+                                answer: answer
+                            })
+                        });
+                        console.log('📤 Answer sent');
+                    } catch (err) {
+                        console.error('❌ Error handling offer:', err);
+                        hasCreatedAnswer.current = false; // Reset on error to allow retry
+                    }
+                }
+
+                // Handle incoming answer (doctor receives)
+                if (isProvider && data.answer && peerConnection.current.signalingState === 'have-local-offer') {
+                    console.log('📥 Doctor receiving answer from patient');
+                    try {
+                        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        console.log('✅ Remote description set successfully');
+                    } catch (err) {
+                        console.error('❌ Error setting remote description:', err);
+                    }
+                }
+
+                // Handle ICE candidates - only add after remote description is set
+                if (data.iceCandidates && data.iceCandidates.length > 0 && peerConnection.current.remoteDescription) {
+                    console.log(`🧊 Adding ${data.iceCandidates.length} ICE candidates`);
+                    for (const candidate of data.iceCandidates) {
+                        try {
+                            if (candidate) {
+                                await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+                            }
+                        } catch (err) {
+                            console.error('❌ Error adding ICE candidate:', err);
+                        }
+                    }
+                }
+
+            } catch (err) {
+                console.error('❌ Signaling polling error:', err);
+            }
+        }, 1000); // Poll every 1 second for faster connection
+    }, [consultationId, isProvider]);
+
+    // Initialize everything when consultation starts
+    useEffect(() => {
+        console.log('🎥 Video Call Effect - consultationStarted:', consultationStarted, 'localStream:', !!localStream);
+        if (consultationStarted && !localStream) {
+            console.log('🎥 Initializing media and signaling...');
+            // Reset the answer flag when starting fresh
+            hasCreatedAnswer.current = false;
+            initializeMedia().then(stream => {
+                console.log('🎥 Media initialized, starting signaling in 1 second...');
+                setTimeout(() => {
+                    startSignaling().catch(err => {
+                        console.error('❌ Signaling failed, retrying in 3 seconds...', err);
+                        setTimeout(() => startSignaling(), 3000);
+                    });
+                }, 1000);
+            }).catch(err => {
+                console.error('🎥 Failed to initialize media:', err);
+            });
+        }
 
         return () => {
-            isMounted = false;
+            if (signalingInterval.current) {
+                clearInterval(signalingInterval.current);
+            }
+        };
+    }, [consultationStarted, localStream, initializeMedia, startSignaling]);
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            hasCreatedAnswer.current = false;
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
             }
+            if (peerConnection.current) {
+                peerConnection.current.close();
+            }
+            if (signalingInterval.current) {
+                clearInterval(signalingInterval.current);
+            }
         };
-    }, []);
-
-    // Simulate participant connection after a delay
-    useEffect(() => {
-        if (consultationStarted) {
-            const timer = setTimeout(() => {
-                setParticipantConnected(true);
-            }, 2000);
-            return () => clearTimeout(timer);
-        }
-    }, [consultationStarted]);
+    }, [localStream]);
 
     const toggleMute = () => {
-        if (stream) {
-            stream.getAudioTracks().forEach(track => {
+        if (localStream) {
+            localStream.getAudioTracks().forEach(track => {
                 track.enabled = !track.enabled;
             });
             setIsMuted(!isMuted);
@@ -95,8 +363,8 @@ export const EnhancedVideoCall = ({
     };
 
     const toggleVideo = () => {
-        if (stream) {
-            stream.getVideoTracks().forEach(track => {
+        if (localStream) {
+            localStream.getVideoTracks().forEach(track => {
                 track.enabled = !track.enabled;
             });
             setIsVideoOff(!isVideoOff);
@@ -110,15 +378,37 @@ export const EnhancedVideoCall = ({
                 audio: true
             });
             
-            if (myVideo.current) {
-                myVideo.current.srcObject = screenStream;
+            if (localVideo.current) {
+                localVideo.current.srcObject = screenStream;
             }
+
+            // Replace video track in peer connection
+            if (peerConnection.current && localStream) {
+                const videoTrack = screenStream.getVideoTracks()[0];
+                const sender = peerConnection.current.getSenders().find(s => 
+                    s.track && s.track.kind === 'video'
+                );
+                if (sender) {
+                    await sender.replaceTrack(videoTrack);
+                }
+            }
+
             setIsScreenSharing(true);
 
             screenStream.getVideoTracks()[0].onended = () => {
                 setIsScreenSharing(false);
-                if (myVideo.current && stream) {
-                    myVideo.current.srcObject = stream;
+                if (localVideo.current && localStream) {
+                    localVideo.current.srcObject = localStream;
+                    // Restore original video track
+                    if (peerConnection.current) {
+                        const videoTrack = localStream.getVideoTracks()[0];
+                        const sender = peerConnection.current.getSenders().find(s => 
+                            s.track && s.track.kind === 'video'
+                        );
+                        if (sender && videoTrack) {
+                            sender.replaceTrack(videoTrack);
+                        }
+                    }
                 }
             };
         } catch (err) {
@@ -128,8 +418,18 @@ export const EnhancedVideoCall = ({
 
     const stopScreenShare = () => {
         setIsScreenSharing(false);
-        if (myVideo.current && stream) {
-            myVideo.current.srcObject = stream;
+        if (localVideo.current && localStream) {
+            localVideo.current.srcObject = localStream;
+            // Restore original video track
+            if (peerConnection.current) {
+                const videoTrack = localStream.getVideoTracks()[0];
+                const sender = peerConnection.current.getSenders().find(s => 
+                    s.track && s.track.kind === 'video'
+                );
+                if (sender && videoTrack) {
+                    sender.replaceTrack(videoTrack);
+                }
+            }
         }
     };
 
@@ -159,14 +459,15 @@ export const EnhancedVideoCall = ({
         >
             {/* Main Video Area */}
             <div className="flex-1 relative bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 rounded-2xl overflow-hidden shadow-2xl">
-                {/* Participant Video (Main) */}
+                {/* Remote Video (Main) */}
                 <div className="absolute inset-0">
-                    {participantConnected && consultationStarted ? (
+                    {participantConnected && remoteStream ? (
                         <FadeIn>
                             <video
-                                ref={participantVideo}
+                                ref={remoteVideo}
                                 autoPlay
                                 playsInline
+                                muted={false}
                                 className="w-full h-full object-cover"
                             />
                         </FadeIn>
@@ -175,8 +476,15 @@ export const EnhancedVideoCall = ({
                             {consultationStarted ? (
                                 <div className="text-center text-white">
                                     <div className="animate-spin w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-                                    <p className="text-xl font-medium">Connecting...</p>
-                                    <p className="text-gray-300">Waiting for {isProvider ? 'patient' : 'doctor'} to join</p>
+                                    <p className="text-xl font-medium">
+                                        {connectionState === 'connecting' ? 'Connecting...' : 'Waiting for participant...'}
+                                    </p>
+                                    <p className="text-gray-300">
+                                        Waiting for {isProvider ? 'patient' : 'doctor'} to join
+                                    </p>
+                                    <p className="text-xs text-gray-400 mt-2">
+                                        You are: {userName} ({isProvider ? 'Provider' : 'Patient'})
+                                    </p>
                                 </div>
                             ) : (
                                 <ScaleIn>
@@ -187,7 +495,8 @@ export const EnhancedVideoCall = ({
                                             </svg>
                                         </div>
                                         <h2 className="text-2xl font-bold mb-2">Ready to Start</h2>
-                                        <p className="text-gray-300 mb-6">Click the button below to begin your consultation</p>
+                                        <p className="text-gray-300 mb-2">Click the button below to begin your consultation</p>
+                                        <p className="text-xs text-blue-300 mb-6">🔄 WebRTC Video Calling v2.0 - Real P2P Connection</p>
                                         <Button 
                                             onClick={onStartConsultation}
                                             className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 px-8 py-3 text-lg font-semibold"
@@ -201,11 +510,11 @@ export const EnhancedVideoCall = ({
                     )}
                 </div>
 
-                {/* My Video (Picture-in-Picture) */}
-                {stream && (
+                {/* Local Video (Picture-in-Picture) */}
+                {localStream && (
                     <div className="absolute bottom-4 right-4 w-48 h-36 bg-black rounded-xl overflow-hidden border-2 border-white shadow-lg z-10">
                         <video
-                            ref={myVideo}
+                            ref={localVideo}
                             muted
                             autoPlay
                             playsInline
@@ -227,10 +536,15 @@ export const EnhancedVideoCall = ({
                 {/* Connection Quality Indicator */}
                 <div className="absolute top-4 left-4 flex items-center space-x-2 bg-black/50 backdrop-blur-sm rounded-lg px-3 py-2">
                     <div className={`w-3 h-3 rounded-full ${
-                        connectionQuality === 'excellent' ? 'bg-green-500' :
-                        connectionQuality === 'good' ? 'bg-yellow-500' : 'bg-red-500'
-                    } animate-pulse`}></div>
-                    <span className="text-white text-sm font-medium capitalize">{connectionQuality}</span>
+                        connectionState === 'connected' ? 'bg-green-500' :
+                        connectionState === 'connecting' ? 'bg-yellow-500 animate-pulse' : 
+                        participantConnected ? 'bg-green-500' : 'bg-red-500'
+                    } ${connectionState === 'connecting' ? 'animate-pulse' : ''}`}></div>
+                    <span className="text-white text-sm font-medium capitalize">
+                        {connectionState === 'connected' ? 'Connected' : 
+                         connectionState === 'connecting' ? 'Connecting...' :
+                         participantConnected ? 'Connected' : 'Waiting'}
+                    </span>
                 </div>
 
                 {/* Recording Indicator */}
@@ -306,7 +620,7 @@ export const EnhancedVideoCall = ({
                         title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
                     >
                         <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                         </svg>
                     </button>
 
@@ -349,7 +663,8 @@ export const EnhancedVideoCall = ({
                 <div className="text-center mt-4">
                     <p className="text-sm text-gray-600">
                         {consultationStatus === 'waiting' ? 'Waiting to start...' :
-                         consultationStatus === 'active' ? 'Consultation in progress' :
+                         consultationStatus === 'active' ? 
+                            (participantConnected ? 'Connected - Consultation in progress' : 'Connecting to participant...') :
                          'Consultation ended'}
                     </p>
                 </div>
