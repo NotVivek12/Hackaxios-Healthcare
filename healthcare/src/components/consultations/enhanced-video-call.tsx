@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { FadeIn, ScaleIn } from '@/components/animations/motion-effects';
 
@@ -25,69 +25,273 @@ export const EnhancedVideoCall = ({
     consultationStarted,
     consultationStatus
 }: EnhancedVideoCallProps) => {
-    const [stream, setStream] = useState<MediaStream | null>(null);
+    const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+    const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
     const [isMuted, setIsMuted] = useState(false);
     const [isVideoOff, setIsVideoOff] = useState(false);
     const [isScreenSharing, setIsScreenSharing] = useState(false);
-    const connectionQuality = 'excellent';
+    const [connectionQuality, setConnectionQuality] = useState<'excellent' | 'good' | 'poor'>('excellent');
     const [recordingActive, setRecordingActive] = useState(false);
     const [participantConnected, setParticipantConnected] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
 
-    const myVideo = useRef<HTMLVideoElement>(null);
-    const participantVideo = useRef<HTMLVideoElement>(null);
+    const localVideo = useRef<HTMLVideoElement>(null);
+    const remoteVideo = useRef<HTMLVideoElement>(null);
+    const peerConnection = useRef<RTCPeerConnection | null>(null);
+    const signalingInterval = useRef<NodeJS.Timeout | null>(null);
 
-    // Initialize media stream
-    useEffect(() => {
-        let isMounted = true;
-        let localStream: MediaStream | null = null;
+    // WebRTC Configuration
+    const rtcConfig: RTCConfiguration = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+        ],
+        iceCandidatePoolSize: 10
+    };
 
-        const getMediaStream = async () => {
-            try {
-                const mediaStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: 1280, height: 720, frameRate: 30 },
-                    audio: { echoCancellation: true, noiseSuppression: true }
-                });
-
-                if (!isMounted) {
-                    mediaStream.getTracks().forEach(track => track.stop());
-                    return;
+    // Initialize local media stream
+    const initializeMedia = useCallback(async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                    width: { ideal: 1280 }, 
+                    height: { ideal: 720 },
+                    frameRate: { ideal: 30 }
+                },
+                audio: { 
+                    echoCancellation: true, 
+                    noiseSuppression: true,
+                    autoGainControl: true
                 }
+            });
 
-                localStream = mediaStream;
-                setStream(mediaStream);
-                if (myVideo.current) {
-                    myVideo.current.srcObject = mediaStream;
+            setLocalStream(stream);
+            if (localVideo.current) {
+                localVideo.current.srcObject = stream;
+            }
+
+            return stream;
+        } catch (err) {
+            console.error('Error accessing media devices:', err);
+            setError('Could not access camera or microphone. Please check your permissions.');
+            throw err;
+        }
+    }, []);
+
+    // Create peer connection
+    const createPeerConnection = useCallback((stream: MediaStream) => {
+        const pc = new RTCPeerConnection(rtcConfig);
+
+        // Add local stream tracks
+        stream.getTracks().forEach(track => {
+            pc.addTrack(track, stream);
+        });
+
+        // Handle remote stream
+        pc.ontrack = (event) => {
+            console.log('Received remote track:', event.track.kind);
+            const [remoteStream] = event.streams;
+            setRemoteStream(remoteStream);
+            if (remoteVideo.current) {
+                remoteVideo.current.srcObject = remoteStream;
+            }
+            setParticipantConnected(true);
+        };
+
+        // Handle ICE candidates
+        pc.onicecandidate = async (event) => {
+            if (event.candidate) {
+                console.log('Sending ICE candidate');
+                try {
+                    await fetch(`/api/meetings/${consultationId}/signal`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            type: 'ice-candidate',
+                            candidate: event.candidate.toJSON()
+                        })
+                    });
+                } catch (err) {
+                    console.error('Error sending ICE candidate:', err);
                 }
-            } catch (err) {
-                console.error('Error accessing media devices:', err);
-                setError('Could not access camera or microphone. Please check your permissions.');
             }
         };
 
-        getMediaStream();
+        // Handle connection state changes
+        pc.onconnectionstatechange = () => {
+            console.log('Connection state:', pc.connectionState);
+            setConnectionState(pc.connectionState as any);
+            
+            switch (pc.connectionState) {
+                case 'connected':
+                    setConnectionQuality('excellent');
+                    setParticipantConnected(true);
+                    break;
+                case 'connecting':
+                    setConnectionQuality('good');
+                    break;
+                case 'disconnected':
+                case 'failed':
+                    setConnectionQuality('poor');
+                    setParticipantConnected(false);
+                    break;
+            }
+        };
+
+        // Handle ICE connection state
+        pc.oniceconnectionstatechange = () => {
+            console.log('ICE connection state:', pc.iceConnectionState);
+        };
+
+        return pc;
+    }, [consultationId]);
+
+    // Start signaling process
+    const startSignaling = useCallback(async () => {
+        if (!localStream || !consultationStarted) return;
+
+        try {
+            setConnectionState('connecting');
+            
+            // Create peer connection
+            const pc = createPeerConnection(localStream);
+            peerConnection.current = pc;
+
+            // Check if we should create offer (doctor initiates)
+            if (isProvider) {
+                console.log('Creating offer as provider');
+                const offer = await pc.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: true
+                });
+                await pc.setLocalDescription(offer);
+
+                // Send offer to signaling server
+                const response = await fetch(`/api/meetings/${consultationId}/signal`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type: 'offer',
+                        offer: offer
+                    })
+                });
+
+                const data = await response.json();
+                if (data.answer) {
+                    console.log('Received answer');
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                }
+            }
+
+            // Start polling for signaling messages
+            startSignalingPolling();
+
+        } catch (err) {
+            console.error('Error starting signaling:', err);
+            setError('Failed to establish connection');
+        }
+    }, [localStream, consultationStarted, isProvider, consultationId, createPeerConnection]);
+
+    // Poll for signaling messages
+    const startSignalingPolling = useCallback(() => {
+        if (signalingInterval.current) {
+            clearInterval(signalingInterval.current);
+        }
+
+        signalingInterval.current = setInterval(async () => {
+            try {
+                const response = await fetch(`/api/meetings/${consultationId}/signal`);
+                const data = await response.json();
+
+                if (!peerConnection.current) return;
+
+                // Handle incoming offer (patient receives)
+                if (data.participants && !isProvider) {
+                    const providerParticipant = data.participants.find((p: any) => p.role === 'doctor');
+                    if (providerParticipant?.hasOffer && !peerConnection.current.remoteDescription) {
+                        // Get the offer
+                        const offerResponse = await fetch(`/api/meetings/${consultationId}/signal`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ type: 'get-offer' })
+                        });
+                        
+                        const offerData = await offerResponse.json();
+                        if (offerData.offer) {
+                            console.log('Received offer, creating answer');
+                            await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offerData.offer));
+                            
+                            const answer = await peerConnection.current.createAnswer();
+                            await peerConnection.current.setLocalDescription(answer);
+                            
+                            // Send answer
+                            await fetch(`/api/meetings/${consultationId}/signal`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    type: 'answer',
+                                    answer: answer
+                                })
+                            });
+                        }
+                    }
+                }
+
+                // Handle ICE candidates
+                if (data.iceCandidates && data.iceCandidates.length > 0) {
+                    for (const candidate of data.iceCandidates) {
+                        try {
+                            await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+                            console.log('Added ICE candidate');
+                        } catch (err) {
+                            console.error('Error adding ICE candidate:', err);
+                        }
+                    }
+                }
+
+            } catch (err) {
+                console.error('Signaling polling error:', err);
+            }
+        }, 2000); // Poll every 2 seconds
+    }, [consultationId, isProvider]);
+
+    // Initialize everything when consultation starts
+    useEffect(() => {
+        if (consultationStarted && !localStream) {
+            initializeMedia().then(stream => {
+                setTimeout(() => startSignaling(), 1000);
+            }).catch(err => {
+                console.error('Failed to initialize media:', err);
+            });
+        }
 
         return () => {
-            isMounted = false;
+            if (signalingInterval.current) {
+                clearInterval(signalingInterval.current);
+            }
+        };
+    }, [consultationStarted, localStream, initializeMedia, startSignaling]);
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
             }
+            if (peerConnection.current) {
+                peerConnection.current.close();
+            }
+            if (signalingInterval.current) {
+                clearInterval(signalingInterval.current);
+            }
         };
-    }, []);
-
-    // Simulate participant connection after a delay
-    useEffect(() => {
-        if (consultationStarted) {
-            const timer = setTimeout(() => {
-                setParticipantConnected(true);
-            }, 2000);
-            return () => clearTimeout(timer);
-        }
-    }, [consultationStarted]);
+    }, [localStream]);
 
     const toggleMute = () => {
-        if (stream) {
-            stream.getAudioTracks().forEach(track => {
+        if (localStream) {
+            localStream.getAudioTracks().forEach(track => {
                 track.enabled = !track.enabled;
             });
             setIsMuted(!isMuted);
@@ -95,8 +299,8 @@ export const EnhancedVideoCall = ({
     };
 
     const toggleVideo = () => {
-        if (stream) {
-            stream.getVideoTracks().forEach(track => {
+        if (localStream) {
+            localStream.getVideoTracks().forEach(track => {
                 track.enabled = !track.enabled;
             });
             setIsVideoOff(!isVideoOff);
@@ -110,15 +314,37 @@ export const EnhancedVideoCall = ({
                 audio: true
             });
             
-            if (myVideo.current) {
-                myVideo.current.srcObject = screenStream;
+            if (localVideo.current) {
+                localVideo.current.srcObject = screenStream;
             }
+
+            // Replace video track in peer connection
+            if (peerConnection.current && localStream) {
+                const videoTrack = screenStream.getVideoTracks()[0];
+                const sender = peerConnection.current.getSenders().find(s => 
+                    s.track && s.track.kind === 'video'
+                );
+                if (sender) {
+                    await sender.replaceTrack(videoTrack);
+                }
+            }
+
             setIsScreenSharing(true);
 
             screenStream.getVideoTracks()[0].onended = () => {
                 setIsScreenSharing(false);
-                if (myVideo.current && stream) {
-                    myVideo.current.srcObject = stream;
+                if (localVideo.current && localStream) {
+                    localVideo.current.srcObject = localStream;
+                    // Restore original video track
+                    if (peerConnection.current) {
+                        const videoTrack = localStream.getVideoTracks()[0];
+                        const sender = peerConnection.current.getSenders().find(s => 
+                            s.track && s.track.kind === 'video'
+                        );
+                        if (sender && videoTrack) {
+                            sender.replaceTrack(videoTrack);
+                        }
+                    }
                 }
             };
         } catch (err) {
@@ -128,8 +354,18 @@ export const EnhancedVideoCall = ({
 
     const stopScreenShare = () => {
         setIsScreenSharing(false);
-        if (myVideo.current && stream) {
-            myVideo.current.srcObject = stream;
+        if (localVideo.current && localStream) {
+            localVideo.current.srcObject = localStream;
+            // Restore original video track
+            if (peerConnection.current) {
+                const videoTrack = localStream.getVideoTracks()[0];
+                const sender = peerConnection.current.getSenders().find(s => 
+                    s.track && s.track.kind === 'video'
+                );
+                if (sender && videoTrack) {
+                    sender.replaceTrack(videoTrack);
+                }
+            }
         }
     };
 
@@ -159,14 +395,15 @@ export const EnhancedVideoCall = ({
         >
             {/* Main Video Area */}
             <div className="flex-1 relative bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 rounded-2xl overflow-hidden shadow-2xl">
-                {/* Participant Video (Main) */}
+                {/* Remote Video (Main) */}
                 <div className="absolute inset-0">
-                    {participantConnected && consultationStarted ? (
+                    {participantConnected && remoteStream ? (
                         <FadeIn>
                             <video
-                                ref={participantVideo}
+                                ref={remoteVideo}
                                 autoPlay
                                 playsInline
+                                muted={false}
                                 className="w-full h-full object-cover"
                             />
                         </FadeIn>
@@ -175,8 +412,12 @@ export const EnhancedVideoCall = ({
                             {consultationStarted ? (
                                 <div className="text-center text-white">
                                     <div className="animate-spin w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-                                    <p className="text-xl font-medium">Connecting...</p>
-                                    <p className="text-gray-300">Waiting for {isProvider ? 'patient' : 'doctor'} to join</p>
+                                    <p className="text-xl font-medium">
+                                        {connectionState === 'connecting' ? 'Connecting...' : 'Waiting for participant...'}
+                                    </p>
+                                    <p className="text-gray-300">
+                                        {isProvider ? 'Waiting for patient to join' : 'Waiting for doctor to join'}
+                                    </p>
                                 </div>
                             ) : (
                                 <ScaleIn>
@@ -201,11 +442,11 @@ export const EnhancedVideoCall = ({
                     )}
                 </div>
 
-                {/* My Video (Picture-in-Picture) */}
-                {stream && (
+                {/* Local Video (Picture-in-Picture) */}
+                {localStream && (
                     <div className="absolute bottom-4 right-4 w-48 h-36 bg-black rounded-xl overflow-hidden border-2 border-white shadow-lg z-10">
                         <video
-                            ref={myVideo}
+                            ref={localVideo}
                             muted
                             autoPlay
                             playsInline
@@ -230,7 +471,9 @@ export const EnhancedVideoCall = ({
                         connectionQuality === 'excellent' ? 'bg-green-500' :
                         connectionQuality === 'good' ? 'bg-yellow-500' : 'bg-red-500'
                     } animate-pulse`}></div>
-                    <span className="text-white text-sm font-medium capitalize">{connectionQuality}</span>
+                    <span className="text-white text-sm font-medium capitalize">
+                        {connectionState === 'connected' ? connectionQuality : connectionState}
+                    </span>
                 </div>
 
                 {/* Recording Indicator */}
@@ -306,7 +549,7 @@ export const EnhancedVideoCall = ({
                         title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
                     >
                         <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                         </svg>
                     </button>
 
@@ -349,7 +592,8 @@ export const EnhancedVideoCall = ({
                 <div className="text-center mt-4">
                     <p className="text-sm text-gray-600">
                         {consultationStatus === 'waiting' ? 'Waiting to start...' :
-                         consultationStatus === 'active' ? 'Consultation in progress' :
+                         consultationStatus === 'active' ? 
+                            (participantConnected ? 'Connected - Consultation in progress' : 'Connecting to participant...') :
                          'Consultation ended'}
                     </p>
                 </div>
