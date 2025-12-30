@@ -259,11 +259,14 @@ export const EnhancedVideoCall = ({
 
     // Initialize everything when consultation starts
     useEffect(() => {
+        console.log('🎥 Video Call Effect - consultationStarted:', consultationStarted, 'localStream:', !!localStream);
         if (consultationStarted && !localStream) {
+            console.log('🎥 Initializing media and signaling...');
             initializeMedia().then(stream => {
+                console.log('🎥 Media initialized, starting signaling in 1 second...');
                 setTimeout(() => startSignaling(), 1000);
             }).catch(err => {
-                console.error('Failed to initialize media:', err);
+                console.error('🎥 Failed to initialize media:', err);
             });
         }
 
@@ -428,7 +431,8 @@ export const EnhancedVideoCall = ({
                                             </svg>
                                         </div>
                                         <h2 className="text-2xl font-bold mb-2">Ready to Start</h2>
-                                        <p className="text-gray-300 mb-6">Click the button below to begin your consultation</p>
+                                        <p className="text-gray-300 mb-2">Click the button below to begin your consultation</p>
+                                        <p className="text-xs text-blue-300 mb-6">🔄 WebRTC Video Calling v2.0 - Real P2P Connection</p>
                                         <Button 
                                             onClick={onStartConsultation}
                                             className="bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600 px-8 py-3 text-lg font-semibold"
