@@ -2,6 +2,15 @@
 
 import mongoose from 'mongoose';
 
+export interface IBlockchainInfo {
+    transactionHash: string;
+    blockNumber: number;
+    recordHash: string;
+    storedAt: Date;
+    verified: boolean;
+    lastVerifiedAt?: Date;
+}
+
 export interface IHealthRecord {
     userId: mongoose.Types.ObjectId;
     title: string;
@@ -12,6 +21,9 @@ export interface IHealthRecord {
     attachmentUrl?: string;
     isShared: boolean;
     notes?: string;
+    // Blockchain fields
+    blockchain?: IBlockchainInfo;
+    isOnBlockchain?: boolean;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -57,6 +69,20 @@ const HealthRecordSchema = new mongoose.Schema<IHealthRecord>(
         },
         notes: {
             type: String
+        },
+        // Blockchain verification fields
+        blockchain: {
+            transactionHash: { type: String },
+            blockNumber: { type: Number },
+            recordHash: { type: String },
+            storedAt: { type: Date },
+            verified: { type: Boolean, default: false },
+            lastVerifiedAt: { type: Date }
+        },
+        isOnBlockchain: {
+            type: Boolean,
+            default: false,
+            index: true
         }
     },
     {

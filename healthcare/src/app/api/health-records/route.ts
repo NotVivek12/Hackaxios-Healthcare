@@ -3,6 +3,11 @@ import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
 import connectDB from '@/lib/mongodb';
 import HealthRecordModel from '@/models/HealthRecord';
+import { 
+    generateRecordHash, 
+    storeRecordOnBlockchain, 
+    getExplorerUrl 
+} from '@/lib/blockchain';
 
 export const runtime = 'nodejs';
 
@@ -102,10 +107,65 @@ export async function POST(req: NextRequest) {
             provider: data.provider,
             attachmentUrl: data.attachmentUrl,
             isShared: data.isShared || false,
-            notes: data.notes
+            notes: data.notes,
+            isOnBlockchain: false
         });
 
-        return NextResponse.json(newRecord, { status: 201 });
+        // Store on blockchain for tamper-proof verification
+        let blockchainResult = null;
+        try {
+            const recordHash = generateRecordHash({
+                userId: userId || '',
+                title: data.title,
+                type: data.type,
+                description: data.description,
+                date: new Date(data.date).toISOString(),
+                provider: data.provider,
+                notes: data.notes
+            });
+
+            const blockchainResponse = await storeRecordOnBlockchain(
+                newRecord._id.toString(),
+                recordHash
+            );
+
+            if (blockchainResponse.success) {
+                // Update record with blockchain info
+                newRecord.blockchain = {
+                    transactionHash: blockchainResponse.transactionHash!,
+                    blockNumber: blockchainResponse.blockNumber!,
+                    recordHash: recordHash,
+                    storedAt: new Date(),
+                    verified: true,
+                    lastVerifiedAt: new Date()
+                };
+                newRecord.isOnBlockchain = true;
+                await newRecord.save();
+
+                blockchainResult = {
+                    success: true,
+                    transactionHash: blockchainResponse.transactionHash,
+                    explorerUrl: getExplorerUrl(blockchainResponse.transactionHash!)
+                };
+            } else {
+                console.warn('Blockchain storage failed:', blockchainResponse.error);
+                blockchainResult = {
+                    success: false,
+                    error: blockchainResponse.error
+                };
+            }
+        } catch (blockchainError) {
+            console.error('Blockchain error (non-fatal):', blockchainError);
+            blockchainResult = {
+                success: false,
+                error: 'Blockchain storage failed, record saved to database only'
+            };
+        }
+
+        return NextResponse.json({
+            ...newRecord.toObject(),
+            blockchainResult
+        }, { status: 201 });
     } catch (error) {
         console.error('Error creating health record:', error);
         return NextResponse.json({ error: 'Failed to create health record' }, { status: 500 });
