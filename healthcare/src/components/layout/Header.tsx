@@ -61,7 +61,7 @@ export default function Header() {
 
     // Common patient navigation (also shown to guests; protected pages will redirect to sign-in)
     const patientCommonNavigation = [
-        { name: t('consultations'), href: '/consultations' },
+        { name: 'Meetings', href: '/meetings' },
         { name: t('dashboard'), href: '/dashboard' },
         { name: t('healthRecords'), href: '/health-records' },
     ];
@@ -71,8 +71,7 @@ export default function Header() {
         // Patient items are covered by patientCommonNavigation above
         patient: [],
         provider: [
-            { name: t('myPatients'), href: '/provider/patients' },
-            { name: t('consultations'), href: '/provider/consultations' },
+            { name: 'Meetings', href: '/meetings' },
             { name: t('dashboard'), href: '/provider/dashboard' },
         ],
         admin: [

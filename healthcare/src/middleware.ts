@@ -1,5 +1,6 @@
 import createMiddleware from 'next-intl/middleware';
 import { NextRequest, NextResponse } from 'next/server';
+import { getToken } from 'next-auth/jwt';
 
 // Create the next-intl middleware with more permissive config
 const intlMiddleware = createMiddleware({
@@ -16,15 +17,25 @@ const intlMiddleware = createMiddleware({
     localeDetection: true
 });
 
+// Public routes that don't require authentication
+const publicRoutes = [
+    '/auth/signin',
+    '/auth/signup',
+    '/api/auth',
+];
+
+// Routes that require specific roles
+const providerOnlyRoutes = ['/provider'];
+const patientOnlyRoutes = ['/dashboard']; // Only patient dashboard, not /meetings
+const sharedRoutes = ['/meetings', '/consultations']; // Both roles can access
+
 // Simple wrapper to handle any custom logic before passing to next-intl middleware
-export default function middleware(request: NextRequest) {
+export default async function middleware(request: NextRequest) {
     // Get the pathname
     const { pathname } = request.nextUrl;
 
     // Create a log of the request for debugging
     console.log(`Middleware processing: ${pathname}`);
-
-    // Removed legacy test-fallback bypass
 
     // Skip middleware for API routes, static files, and other excluded paths
     if (
@@ -36,8 +47,69 @@ export default function middleware(request: NextRequest) {
         pathname === '/static-fallback.html' ||
         pathname === '/static-test'
     ) {
-        console.log('Bypassing middleware for excluded path');
         return NextResponse.next();
+    }
+
+    // Check if it's a public route (signin/signup)
+    const isPublicRoute = publicRoutes.some(route => pathname.includes(route));
+    
+    // Get the locale from the path
+    const pathSegments = pathname.split('/').filter(Boolean);
+    const locale = pathSegments[0] || 'en';
+    const pathWithoutLocale = '/' + pathSegments.slice(1).join('/');
+
+    // Check authentication for protected routes
+    if (!isPublicRoute && pathWithoutLocale !== '' && pathWithoutLocale !== '/') {
+        try {
+            const token = await getToken({ 
+                req: request, 
+                secret: process.env.NEXTAUTH_SECRET 
+            });
+
+            if (!token) {
+                // Redirect to signin if not authenticated
+                const signInUrl = new URL(`/${locale}/auth/signin`, request.url);
+                signInUrl.searchParams.set('callbackUrl', pathname);
+                return NextResponse.redirect(signInUrl);
+            }
+
+            // Check role-based access
+            const userRole = token.role as string;
+
+            // Provider trying to access patient-only routes (like /dashboard)
+            if (userRole === 'provider' && patientOnlyRoutes.some(route => pathWithoutLocale === route || pathWithoutLocale.startsWith(route + '/'))) {
+                const providerDashboard = new URL(`/${locale}/provider/dashboard`, request.url);
+                return NextResponse.redirect(providerDashboard);
+            }
+
+            // Patient trying to access provider-only routes
+            if (userRole === 'patient' && providerOnlyRoutes.some(route => pathWithoutLocale.startsWith(route))) {
+                const patientDashboard = new URL(`/${locale}/dashboard`, request.url);
+                return NextResponse.redirect(patientDashboard);
+            }
+        } catch (error) {
+            console.error('Auth check error:', error);
+        }
+    }
+
+    // If authenticated user tries to access auth pages, redirect to appropriate dashboard
+    if (isPublicRoute) {
+        try {
+            const token = await getToken({ 
+                req: request, 
+                secret: process.env.NEXTAUTH_SECRET 
+            });
+
+            if (token) {
+                const userRole = token.role as string;
+                const dashboardUrl = userRole === 'provider' 
+                    ? `/${locale}/provider/dashboard`
+                    : `/${locale}/dashboard`;
+                return NextResponse.redirect(new URL(dashboardUrl, request.url));
+            }
+        } catch (error) {
+            console.error('Auth redirect error:', error);
+        }
     }
 
     // For all other routes, use the intl middleware

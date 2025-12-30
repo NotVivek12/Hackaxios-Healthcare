@@ -314,16 +314,22 @@ export default function DashboardPage() {
                                         </CardDescription>
                                     </CardHeader>
                                     <CardContent className="space-y-4">
+                                        <Link href="/meetings/schedule">
+                                            <Button className="w-full justify-start bg-gradient-to-r from-cyan-500 to-violet-500 text-white hover:from-cyan-600 hover:to-violet-600" animated>
+                                                <Calendar className="mr-2 h-4 w-4" />
+                                                Schedule a Meeting
+                                            </Button>
+                                        </Link>
+                                        <Link href="/meetings">
+                                            <Button className="w-full justify-start" variant="glassmorphism" animated>
+                                                <Calendar className="mr-2 h-4 w-4" />
+                                                View My Meetings
+                                            </Button>
+                                        </Link>
                                         <Link href="/symptom-checker">
                                             <Button className="w-full justify-start" variant="glassmorphism" animated>
                                                 <Activity className="mr-2 h-4 w-4" />
                                                 {t('startSymptomCheck')}
-                                            </Button>
-                                        </Link>
-                                        <Link href="/consultations">
-                                            <Button className="w-full justify-start" variant="glassmorphism" animated>
-                                                <Calendar className="mr-2 h-4 w-4" />
-                                                {t('bookConsultation')}
                                             </Button>
                                         </Link>
                                         <Button

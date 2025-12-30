@@ -5,7 +5,7 @@ import User from '@/models/User';
 
 export async function POST(request: NextRequest) {
     try {
-        const { name, email, password } = await request.json();
+        const { name, email, password, role, specialty } = await request.json();
 
         // Input validation
         if (!name || !email || !password) {
@@ -14,6 +14,10 @@ export async function POST(request: NextRequest) {
                 { status: 400 }
             );
         }
+
+        // Validate role
+        const validRoles = ['patient', 'provider'];
+        const userRole = validRoles.includes(role) ? role : 'patient';
 
         // Email format validation
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -28,6 +32,14 @@ export async function POST(request: NextRequest) {
         if (password.length < 8) {
             return NextResponse.json(
                 { error: 'Password must be at least 8 characters long' },
+                { status: 400 }
+            );
+        }
+
+        // Validate specialty for providers
+        if (userRole === 'provider' && !specialty) {
+            return NextResponse.json(
+                { error: 'Specialty is required for healthcare providers' },
                 { status: 400 }
             );
         }
@@ -49,14 +61,34 @@ export async function POST(request: NextRequest) {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Create user
-        const newUser = new User({
+        // Create user with role-specific profile
+        const userData: {
+            name: string;
+            email: string;
+            password: string;
+            role: string;
+            profile?: {
+                specialty?: string;
+                yearsExperience?: number;
+                bio?: string;
+            };
+        } = {
             name,
             email,
             password: hashedPassword,
-            role: 'patient', // Default role
-        });
+            role: userRole,
+        };
 
+        // Add provider-specific fields
+        if (userRole === 'provider') {
+            userData.profile = {
+                specialty: specialty,
+                yearsExperience: 0,
+                bio: '',
+            };
+        }
+
+        const newUser = new User(userData);
         await newUser.save();
 
         // Return success without exposing password

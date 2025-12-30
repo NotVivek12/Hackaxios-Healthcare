@@ -104,3 +104,53 @@ export interface Prescription {
     duration: string;
     instructions: string;
 }
+
+export interface Meeting {
+    _id: string;
+    patientId: string;
+    doctorId: string;
+    type: 'text' | 'audio' | 'video';
+    status: 'scheduled' | 'active' | 'ended' | 'cancelled';
+    scheduledFor: Date;
+    reason: string;
+    roomId: string;
+    notes?: string;
+    messages: MeetingMessage[];
+    startedAt?: Date;
+    endedAt?: Date;
+    patient?: {
+        _id: string;
+        name: string;
+        email: string;
+    };
+    doctor?: {
+        _id: string;
+        name: string;
+        email: string;
+        specialty?: string;
+    };
+}
+
+export interface MeetingMessage {
+    senderId: string;
+    senderName: string;
+    senderRole: 'patient' | 'provider';
+    content: string;
+    timestamp: Date;
+}
+
+export interface MeetingNotification {
+    id: string;
+    type: 'meeting_scheduled' | 'meeting_active' | 'meeting_cancelled' | 'meeting_ended' | 'system';
+    title: string;
+    message: string;
+    read: boolean;
+    timestamp: Date;
+    referenceId?: string;
+    metadata?: {
+        meetingType?: string;
+        patientName?: string;
+        doctorName?: string;
+        scheduledFor?: Date;
+    };
+}

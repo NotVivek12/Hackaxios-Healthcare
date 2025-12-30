@@ -6,7 +6,7 @@ import { useTranslations } from 'next-intl';
 import { useRouter } from '@/navigation';
 import { Link } from '@/navigation';
 import { useState, useEffect } from 'react';
-import { Users, Calendar, Clock, FileText } from 'lucide-react';
+import { Users, Calendar, Clock, FileText, Bell, Video, Phone, MessageSquare, CheckCircle, XCircle, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
@@ -19,18 +19,33 @@ interface Patient {
     lastLogin?: Date;
 }
 
-interface Consultation {
+interface Meeting {
     _id: string;
-    patientId: {
+    type: 'text' | 'audio' | 'video';
+    status: 'scheduled' | 'active' | 'ended' | 'cancelled';
+    scheduledFor: string;
+    reason: string;
+    roomId: string;
+    patient: {
         _id: string;
         name: string;
         email: string;
-    };
+    } | null;
+}
+
+interface Notification {
+    id: string;
     type: string;
-    scheduledFor: string;
-    status: string;
-    reason: string;
-    notes?: string;
+    title: string;
+    message: string;
+    read: boolean;
+    timestamp: string;
+    referenceId?: string;
+    metadata?: {
+        meetingType?: string;
+        patientName?: string;
+        scheduledFor?: string;
+    };
 }
 
 interface DashboardData {
@@ -40,7 +55,7 @@ interface DashboardData {
         uniquePatientCount: number;
         todayConsultations: number;
     };
-    upcomingConsultations: Consultation[];
+    upcomingConsultations: Meeting[];
     recentPatients: Patient[];
 }
 
@@ -49,541 +64,372 @@ export default function ProviderDashboardPage() {
     const t = useTranslations('ProviderDashboard');
     const router = useRouter();
     const [activeTab, setActiveTab] = useState('overview');
-    const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
-    const [loading, setLoading] = useState(true);
+    const [meetings, setMeetings] = useState<Meeting[]>([]);
+    const [notifications, setNotifications] = useState<Notification[]>([]);
+    const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    // Redirect if not logged in or not a provider
+    // Fetch meetings and notifications
     useEffect(() => {
-        if (status === 'unauthenticated') {
-            router.push('/auth/signin');
-        }
-
-        if (session && session.user.role !== 'provider') {
-            router.push('/dashboard');
-        }
-    }, [session, status, router]);
-
-    // Fetch provider dashboard data
-    useEffect(() => {
-        const fetchDashboardData = async () => {
+        const fetchData = async () => {
             try {
                 setLoading(true);
-                const response = await fetch('/api/provider/dashboard');
-
-                if (!response.ok) {
-                    throw new Error(`Error: ${response.status}`);
+                
+                // Fetch meetings
+                const meetingsRes = await fetch('/api/meetings');
+                if (meetingsRes.ok) {
+                    const meetingsData = await meetingsRes.json();
+                    setMeetings(meetingsData);
                 }
 
-                const data = await response.json();
-                setDashboardData(data);
+                // Fetch notifications
+                const notifRes = await fetch('/api/notifications');
+                if (notifRes.ok) {
+                    const notifData = await notifRes.json();
+                    setNotifications(notifData.notifications || []);
+                }
             } catch (err) {
-                console.error('Failed to fetch dashboard data:', err);
-                setError('Failed to load dashboard data. Please try again later.');
+                console.error('Failed to fetch data:', err);
+                setError('Failed to load dashboard data');
             } finally {
                 setLoading(false);
             }
         };
 
-        if (session && session.user.role === 'provider') {
-            fetchDashboardData();
+        if (status === 'authenticated' && session?.user?.role === 'provider') {
+            fetchData();
+            // Poll for updates every 30 seconds
+            const interval = setInterval(fetchData, 30000);
+            return () => clearInterval(interval);
+        } else if (status === 'authenticated' && session?.user?.role !== 'provider') {
+            setLoading(false);
         }
-    }, [session]);
+    }, [session, status]);
 
-    // Rendering functions
-    const renderLoading = () => (
-        <div className="flex justify-center items-center h-64">
-            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-        </div>
-    );
+    const markNotificationRead = async (notificationId: string) => {
+        await fetch('/api/notifications', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notificationId }),
+        });
+        setNotifications(prev => 
+            prev.map(n => n.id === notificationId ? { ...n, read: true } : n)
+        );
+    };
 
-    const renderError = (errorMessage: string) => (
-        <div className="bg-red-50 border-l-4 border-red-500 p-4 my-4">
-            <div className="flex">
-                <div className="flex-shrink-0">
-                    <svg className="h-5 w-5 text-red-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                    </svg>
-                </div>
-                <div className="ml-3">
-                    <p className="text-sm text-red-700">{errorMessage}</p>
-                </div>
-            </div>
-        </div>
-    );
+    const getTypeIcon = (type: string) => {
+        switch (type) {
+            case 'video': return <Video className="h-4 w-4 text-violet-400" />;
+            case 'audio': return <Phone className="h-4 w-4 text-cyan-400" />;
+            case 'text': return <MessageSquare className="h-4 w-4 text-emerald-400" />;
+            default: return <Video className="h-4 w-4 text-violet-400" />;
+        }
+    };
 
+    const getStatusBadge = (status: string) => {
+        switch (status) {
+            case 'active':
+                return <span className="px-2 py-1 rounded-full text-xs bg-green-500/20 text-green-400 animate-pulse">Active</span>;
+            case 'scheduled':
+                return <span className="px-2 py-1 rounded-full text-xs bg-blue-500/20 text-blue-400">Scheduled</span>;
+            default:
+                return <span className="px-2 py-1 rounded-full text-xs bg-slate-500/20 text-slate-400">{status}</span>;
+        }
+    };
+
+    const unreadCount = notifications.filter(n => !n.read).length;
+    const activeMeetings = meetings.filter(m => m.status === 'active');
+    const scheduledMeetings = meetings.filter(m => m.status === 'scheduled');
+
+    // Show loading only for initial session check
     if (status === 'loading') {
-        return renderLoading();
+        return (
+            <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-violet-400" />
+            </div>
+        );
     }
 
     if (!session) {
-        return null; // Redirect will happen in the useEffect
+        return null;
     }
 
     return (
-        <div className="container mx-auto px-4 py-8">
-            <div className="mb-8">
-                <h1 className="text-3xl font-bold mb-2">{t('title')}</h1>
-                <p className="text-gray-600">{t('subtitle')}</p>
-            </div>
+        <div className="min-h-screen bg-slate-950 text-white">
+            <div className="absolute inset-0 bg-gradient-to-br from-slate-950 via-violet-950/30 to-slate-900" />
+            <div className="absolute inset-0 opacity-40" style={{
+                backgroundImage: 'radial-gradient(circle at 70% 20%, rgba(139, 92, 246, 0.25), transparent 50%)'
+            }} />
 
-            {/* Tab Navigation */}
-            <div className="border-b border-gray-200 mb-6">
-                <nav className="flex -mb-px">
-                    <button
-                        onClick={() => setActiveTab('overview')}
-                        className={`py-4 px-6 text-center border-b-2 font-medium text-sm ${activeTab === 'overview'
-                                ? 'border-blue-500 text-blue-600'
-                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                            }`}
-                    >
-                        {t('tabs.overview')}
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('consultations')}
-                        className={`py-4 px-6 text-center border-b-2 font-medium text-sm ${activeTab === 'consultations'
-                                ? 'border-blue-500 text-blue-600'
-                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                            }`}
-                    >
-                        {t('tabs.consultations')}
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('patients')}
-                        className={`py-4 px-6 text-center border-b-2 font-medium text-sm ${activeTab === 'patients'
-                                ? 'border-blue-500 text-blue-600'
-                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                            }`}
-                    >
-                        {t('tabs.patients')}
-                    </button>
-                </nav>
-            </div>
+            <div className="relative z-10 max-w-7xl mx-auto px-4 py-8">
+                {/* Header */}
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
+                    <div>
+                        <h1 className="text-3xl font-bold bg-gradient-to-r from-violet-400 to-purple-400 bg-clip-text text-transparent">
+                            Doctor Dashboard
+                        </h1>
+                        <p className="text-slate-400 mt-1">Welcome back, Dr. {session.user.name}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <Button
+                            variant="outline"
+                            className="relative border-slate-700 text-slate-300 hover:text-white"
+                            onClick={() => setActiveTab('notifications')}
+                        >
+                            <Bell className="h-4 w-4 mr-2" />
+                            Notifications
+                            {unreadCount > 0 && (
+                                <span className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-xs flex items-center justify-center">
+                                    {unreadCount}
+                                </span>
+                            )}
+                        </Button>
+                    </div>
+                </div>
 
-            {loading ? (
-                renderLoading()
-            ) : error ? (
-                renderError(error)
-            ) : (
-                <>
-                    {/* Overview Tab */}
-                    {activeTab === 'overview' && (
-                        <div>
-                            {/* Stats Cards */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                                <Card>
-                                    <CardHeader className="flex flex-row items-center justify-between pb-2">
-                                        <CardTitle className="text-sm font-medium">
-                                            {t('stats.totalConsultations')}
-                                        </CardTitle>
-                                        <Calendar className="h-4 w-4 text-gray-500" />
-                                    </CardHeader>
-                                    <CardContent>
-                                        <div className="text-2xl font-bold">
-                                            {dashboardData?.stats.totalConsultations || 0}
-                                        </div>
-                                        <p className="text-xs text-gray-500">
-                                            {t('stats.lifetimeConsultations')}
-                                        </p>
-                                    </CardContent>
-                                </Card>
-                                <Card>
-                                    <CardHeader className="flex flex-row items-center justify-between pb-2">
-                                        <CardTitle className="text-sm font-medium">
-                                            {t('stats.completedConsultations')}
-                                        </CardTitle>
-                                        <FileText className="h-4 w-4 text-gray-500" />
-                                    </CardHeader>
-                                    <CardContent>
-                                        <div className="text-2xl font-bold">
-                                            {dashboardData?.stats.completedConsultations || 0}
-                                        </div>
-                                        <p className="text-xs text-gray-500">
-                                            {t('stats.consultationsCompleted')}
-                                        </p>
-                                    </CardContent>
-                                </Card>
-                                <Card>
-                                    <CardHeader className="flex flex-row items-center justify-between pb-2">
-                                        <CardTitle className="text-sm font-medium">
-                                            {t('stats.uniquePatients')}
-                                        </CardTitle>
-                                        <Users className="h-4 w-4 text-gray-500" />
-                                    </CardHeader>
-                                    <CardContent>
-                                        <div className="text-2xl font-bold">
-                                            {dashboardData?.stats.uniquePatientCount || 0}
-                                        </div>
-                                        <p className="text-xs text-gray-500">
-                                            {t('stats.totalUniquePatients')}
-                                        </p>
-                                    </CardContent>
-                                </Card>
-                                <Card>
-                                    <CardHeader className="flex flex-row items-center justify-between pb-2">
-                                        <CardTitle className="text-sm font-medium">
-                                            {t('stats.todayConsultations')}
-                                        </CardTitle>
-                                        <Clock className="h-4 w-4 text-gray-500" />
-                                    </CardHeader>
-                                    <CardContent>
-                                        <div className="text-2xl font-bold">
-                                            {dashboardData?.stats.todayConsultations || 0}
-                                        </div>
-                                        <p className="text-xs text-gray-500">
-                                            {t('stats.scheduledForToday')}
-                                        </p>
-                                    </CardContent>
-                                </Card>
+                {/* Active Meetings Alert */}
+                {activeMeetings.length > 0 && (
+                    <div className="mb-6 p-4 rounded-xl bg-green-500/20 border border-green-500/30 animate-pulse">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-full bg-green-500 flex items-center justify-center">
+                                    <Video className="h-5 w-5 text-white" />
+                                </div>
+                                <div>
+                                    <h3 className="font-medium text-green-400">Active Meeting</h3>
+                                    <p className="text-sm text-green-300/70">
+                                        {activeMeetings[0].patient?.name} is waiting for you
+                                    </p>
+                                </div>
                             </div>
-
-                            {/* Upcoming Consultations */}
-                            <h2 className="text-xl font-bold mb-4">{t('upcomingConsultations')}</h2>
-                            <div className="bg-white shadow overflow-hidden sm:rounded-md mb-8">
-                                <ul className="divide-y divide-gray-200">
-                                    {dashboardData?.upcomingConsultations && dashboardData.upcomingConsultations.length > 0 ? (
-                                        dashboardData.upcomingConsultations.map((consultation) => (
-                                            <li key={consultation._id}>
-                                                <div className="px-4 py-4 sm:px-6">
-                                                    <div className="flex items-center justify-between">
-                                                        <div className="flex items-center">
-                                                            <div className="ml-3">
-                                                                <p className="text-sm font-medium text-blue-600">
-                                                                    {consultation.patientId.name}
-                                                                </p>
-                                                                <p className="text-sm text-gray-500">
-                                                                    {consultation.reason}
-                                                                </p>
-                                                            </div>
-                                                        </div>
-                                                        <div className="ml-2 flex-shrink-0 flex">
-                                                            <p className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
-                                                                {consultation.status}
-                                                            </p>
-                                                        </div>
-                                                    </div>
-                                                    <div className="mt-2 sm:flex sm:justify-between">
-                                                        <div className="sm:flex">
-                                                            <p className="flex items-center text-sm text-gray-500">
-                                                                <Calendar className="flex-shrink-0 mr-1.5 h-4 w-4 text-gray-400" />
-                                                                {new Date(consultation.scheduledFor).toLocaleDateString()}
-                                                            </p>
-                                                            <p className="mt-2 flex items-center text-sm text-gray-500 sm:mt-0 sm:ml-6">
-                                                                <Clock className="flex-shrink-0 mr-1.5 h-4 w-4 text-gray-400" />
-                                                                {new Date(consultation.scheduledFor).toLocaleTimeString()}
-                                                            </p>
-                                                        </div>
-                                                        <div className="mt-2 sm:mt-0">
-                                                            <Link href={`/consultations/room/${consultation._id}`} locale={undefined}>
-                                                                <Button>{t('joinConsultation')}</Button>
-                                                            </Link>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </li>
-                                        ))
-                                    ) : (
-                                        <li className="px-4 py-4 sm:px-6 text-center text-gray-500">
-                                            {t('noUpcomingConsultations')}
-                                        </li>
-                                    )}
-                                </ul>
-                            </div>
-
-                            {/* Recent Patients */}
-                            <h2 className="text-xl font-bold mb-4">{t('recentPatients')}</h2>
-                            <div className="bg-white shadow overflow-hidden rounded-md">
-                                <ul className="divide-y divide-gray-200">
-                                    {dashboardData?.recentPatients && dashboardData.recentPatients.length > 0 ? (
-                                        dashboardData.recentPatients.map((patient) => (
-                                            <li key={patient.id} className="px-6 py-4 flex items-center">
-                                                <div className="min-w-0 flex-1 flex items-center">
-                                                    <div className="flex-shrink-0">
-                                                        <div className="h-10 w-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-500">
-                                                            {patient.profilePicture ? (
-                                                                <Image
-                                                                    src={patient.profilePicture}
-                                                                    alt={patient.name}
-                                                                    width={40}
-                                                                    height={40}
-                                                                    className="h-10 w-10 rounded-full object-cover"
-                                                                    unoptimized
-                                                                />
-                                                            ) : (
-                                                                patient.name.charAt(0).toUpperCase()
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                    <div className="min-w-0 flex-1 px-4">
-                                                        <div>
-                                                            <p className="text-sm font-medium text-blue-600 truncate">{patient.name}</p>
-                                                            <p className="text-sm text-gray-500 truncate">{patient.email}</p>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                <div>
-                                                    <Button variant="outline" size="sm">
-                                                        {t('viewProfile')}
-                                                    </Button>
-                                                </div>
-                                            </li>
-                                        ))
-                                    ) : (
-                                        <li className="px-4 py-4 text-center text-gray-500">
-                                            {t('noRecentPatients')}
-                                        </li>
-                                    )}
-                                </ul>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Consultations Tab */}
-                    {activeTab === 'consultations' && (
-                        <div>
-                            <div className="mb-6 flex justify-between items-center">
-                                <h2 className="text-xl font-bold">{t('allConsultations')}</h2>
-                                <Button className="bg-blue-600">
-                                    {t('newConsultation')}
+                            <Link href={`/meetings/room/${activeMeetings[0]._id}`}>
+                                <Button className="bg-green-600 hover:bg-green-700">
+                                    Join Now
                                 </Button>
-                            </div>
-
-                            <div className="bg-white p-6 rounded-lg shadow-md mb-6">
-                                <div className="flex flex-wrap gap-4 mb-4">
-                                    <div className="flex-1 min-w-[200px]">
-                                        <label htmlFor="status-filter" className="block text-sm font-medium text-gray-700 mb-1">
-                                            {t('filter.status')}
-                                        </label>
-                                        <select
-                                            id="status-filter"
-                                            className="px-4 py-2 border border-gray-300 rounded-md text-sm w-full"
-                                            aria-label={t('filter.status')}
-                                        >
-                                            <option value="all">{t('filter.all')}</option>
-                                            <option value="scheduled">{t('filter.scheduled')}</option>
-                                            <option value="completed">{t('filter.completed')}</option>
-                                            <option value="cancelled">{t('filter.cancelled')}</option>
-                                        </select>
-                                    </div>
-                                    <div className="flex-1 min-w-[200px]">
-                                        <label htmlFor="date-filter" className="block text-sm font-medium text-gray-700 mb-1">
-                                            {t('filter.date')}
-                                        </label>
-                                        <select
-                                            id="date-filter"
-                                            className="px-4 py-2 border border-gray-300 rounded-md text-sm w-full"
-                                            aria-label={t('filter.date')}
-                                        >
-                                            <option value="all">{t('filter.allDates')}</option>
-                                            <option value="today">{t('filter.today')}</option>
-                                            <option value="week">{t('filter.thisWeek')}</option>
-                                            <option value="month">{t('filter.thisMonth')}</option>
-                                        </select>
-                                    </div>
-                                    <div className="flex-1 min-w-[200px]">
-                                        <label htmlFor="patient-search" className="block text-sm font-medium text-gray-700 mb-1">
-                                            {t('filter.patient')}
-                                        </label>
-                                        <input
-                                            id="patient-search"
-                                            type="text"
-                                            placeholder={t('filter.searchPatient')}
-                                            className="px-4 py-2 border border-gray-300 rounded-md text-sm w-full"
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="bg-white shadow overflow-hidden rounded-md">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead className="bg-gray-50">
-                                        <tr>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('table.patient')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('table.date')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('table.time')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('table.type')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('table.status')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('table.actions')}
-                                            </th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white divide-y divide-gray-200">
-                                        {dashboardData?.upcomingConsultations && dashboardData.upcomingConsultations.length > 0 ? (
-                                            dashboardData.upcomingConsultations.map((consultation) => (
-                                                <tr key={consultation._id}>
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <div className="flex items-center">
-                                                            <div className="ml-4">
-                                                                <div className="text-sm font-medium text-gray-900">{consultation.patientId.name}</div>
-                                                                <div className="text-sm text-gray-500">{consultation.patientId.email}</div>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <div className="text-sm text-gray-900">{new Date(consultation.scheduledFor).toLocaleDateString()}</div>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <div className="text-sm text-gray-900">{new Date(consultation.scheduledFor).toLocaleTimeString()}</div>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <div className="text-sm text-gray-900">{consultation.type}</div>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
-                                                            {consultation.status}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                        <Link href={`/consultations/room/${consultation._id}`} locale={undefined} className="text-blue-600 hover:text-blue-900">
-                                                            {t('table.join')}
-                                                        </Link>
-                                                    </td>
-                                                </tr>
-                                            ))
-                                        ) : (
-                                            <tr>
-                                                <td colSpan={6} className="px-6 py-4 text-center text-gray-500">
-                                                    {t('noConsultationsFound')}
-                                                </td>
-                                            </tr>
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
+                            </Link>
                         </div>
-                    )}
+                    </div>
+                )}
 
-                    {/* Patients Tab */}
-                    {activeTab === 'patients' && (
-                        <div>
-                            <div className="mb-6 flex justify-between items-center">
-                                <h2 className="text-xl font-bold">{t('allPatients')}</h2>
-                            </div>
-
-                            <div className="bg-white p-6 rounded-lg shadow-md mb-6">
-                                <div className="flex flex-wrap gap-4 mb-4">
-                                    <div className="flex-1 min-w-[300px]">
-                                        <label htmlFor="patient-name-search" className="block text-sm font-medium text-gray-700 mb-1">
-                                            {t('search.byName')}
-                                        </label>
-                                        <input
-                                            id="patient-name-search"
-                                            type="text"
-                                            placeholder={t('search.enterPatientName')}
-                                            className="px-4 py-2 border border-gray-300 rounded-md text-sm w-full"
-                                        />
-                                    </div>
-                                    <div className="flex-1 min-w-[300px]">
-                                        <label htmlFor="patient-email-search" className="block text-sm font-medium text-gray-700 mb-1">
-                                            {t('search.byEmail')}
-                                        </label>
-                                        <input
-                                            id="patient-email-search"
-                                            type="text"
-                                            placeholder={t('search.enterPatientEmail')}
-                                            className="px-4 py-2 border border-gray-300 rounded-md text-sm w-full"
-                                        />
-                                    </div>
+                {/* Stats Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                    <Card className="bg-slate-900/50 border-slate-700">
+                        <CardContent className="pt-6">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-slate-400 text-sm">Active Meetings</p>
+                                    <p className="text-3xl font-bold text-green-400">{activeMeetings.length}</p>
                                 </div>
-                                <div className="mt-4">
-                                    <Button className="bg-blue-600">
-                                        {t('search.searchButton')}
-                                    </Button>
+                                <div className="w-12 h-12 rounded-full bg-green-500/20 flex items-center justify-center">
+                                    <Video className="h-6 w-6 text-green-400" />
                                 </div>
                             </div>
-
-                            <div className="bg-white shadow overflow-hidden rounded-md">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead className="bg-gray-50">
-                                        <tr>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('patientTable.name')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('patientTable.email')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('patientTable.lastConsultation')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('patientTable.totalConsultations')}
-                                            </th>
-                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                {t('patientTable.actions')}
-                                            </th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white divide-y divide-gray-200">
-                                        {dashboardData?.recentPatients && dashboardData.recentPatients.length > 0 ? (
-                                            dashboardData.recentPatients.map((patient) => (
-                                                <tr key={patient.id}>
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <div className="flex items-center">
-                                                            <div className="flex-shrink-0 h-10 w-10">
-                                                                <div className="h-10 w-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-500">
-                                                                    {patient.profilePicture ? (
-                                                                        <Image
-                                                                            src={patient.profilePicture}
-                                                                            alt={patient.name}
-                                                                            width={40}
-                                                                            height={40}
-                                                                            className="h-10 w-10 rounded-full object-cover"
-                                                                            unoptimized
-                                                                        />
-                                                                    ) : (
-                                                                        patient.name.charAt(0).toUpperCase()
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                            <div className="ml-4">
-                                                                <div className="text-sm font-medium text-gray-900">{patient.name}</div>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <div className="text-sm text-gray-500">{patient.email}</div>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap">
-                                                        <div className="text-sm text-gray-900">N/A</div>
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                        N/A
-                                                    </td>
-                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                        <button className="text-blue-600 hover:text-blue-900 mr-4">
-                                                            {t('patientTable.viewProfile')}
-                                                        </button>
-                                                        <button className="text-green-600 hover:text-green-900">
-                                                            {t('patientTable.newConsultation')}
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            ))
-                                        ) : (
-                                            <tr>
-                                                <td colSpan={5} className="px-6 py-4 text-center text-gray-500">
-                                                    {t('noPatientsFound')}
-                                                </td>
-                                            </tr>
-                                        )}
-                                    </tbody>
-                                </table>
+                        </CardContent>
+                    </Card>
+                    <Card className="bg-slate-900/50 border-slate-700">
+                        <CardContent className="pt-6">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-slate-400 text-sm">Scheduled</p>
+                                    <p className="text-3xl font-bold text-blue-400">{scheduledMeetings.length}</p>
+                                </div>
+                                <div className="w-12 h-12 rounded-full bg-blue-500/20 flex items-center justify-center">
+                                    <Calendar className="h-6 w-6 text-blue-400" />
+                                </div>
                             </div>
-                        </div>
-                    )}
-                </>
-            )}
+                        </CardContent>
+                    </Card>
+                    <Card className="bg-slate-900/50 border-slate-700">
+                        <CardContent className="pt-6">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-slate-400 text-sm">Unread Alerts</p>
+                                    <p className="text-3xl font-bold text-violet-400">{unreadCount}</p>
+                                </div>
+                                <div className="w-12 h-12 rounded-full bg-violet-500/20 flex items-center justify-center">
+                                    <Bell className="h-6 w-6 text-violet-400" />
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+                    <Card className="bg-slate-900/50 border-slate-700">
+                        <CardContent className="pt-6">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-slate-400 text-sm">Total Patients</p>
+                                    <p className="text-3xl font-bold text-cyan-400">{meetings.length}</p>
+                                </div>
+                                <div className="w-12 h-12 rounded-full bg-cyan-500/20 flex items-center justify-center">
+                                    <Users className="h-6 w-6 text-cyan-400" />
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* Tabs */}
+                <div className="flex gap-2 mb-6 border-b border-slate-800 pb-4">
+                    {['overview', 'notifications'].map((tab) => (
+                        <button
+                            key={tab}
+                            onClick={() => setActiveTab(tab)}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                                activeTab === tab
+                                    ? 'bg-gradient-to-r from-violet-500 to-purple-500 text-white'
+                                    : 'text-slate-400 hover:text-white'
+                            }`}
+                        >
+                            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                        </button>
+                    ))}
+                </div>
+
+                {/* Overview Tab */}
+                {activeTab === 'overview' && (
+                    <div className="grid gap-6 md:grid-cols-2">
+                        {/* Upcoming Meetings */}
+                        <Card className="bg-slate-900/50 border-slate-700">
+                            <CardHeader>
+                                <CardTitle className="text-white flex items-center gap-2">
+                                    <Calendar className="h-5 w-5 text-violet-400" />
+                                    Upcoming Meetings
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                {scheduledMeetings.length === 0 ? (
+                                    <p className="text-slate-500 text-center py-8">No scheduled meetings</p>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {scheduledMeetings.slice(0, 5).map((meeting) => (
+                                            <div
+                                                key={meeting._id}
+                                                className="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-all"
+                                            >
+                                                <div className="flex items-center gap-3">
+                                                    {getTypeIcon(meeting.type)}
+                                                    <div>
+                                                        <p className="text-white font-medium">{meeting.patient?.name || 'Unknown'}</p>
+                                                        <p className="text-slate-400 text-sm">
+                                                            {new Date(meeting.scheduledFor).toLocaleString()}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                <Link href={`/meetings/room/${meeting._id}`}>
+                                                    <Button size="sm" variant="outline" className="border-slate-600">
+                                                        View
+                                                    </Button>
+                                                </Link>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+
+                        {/* Recent Notifications */}
+                        <Card className="bg-slate-900/50 border-slate-700">
+                            <CardHeader>
+                                <CardTitle className="text-white flex items-center gap-2">
+                                    <Bell className="h-5 w-5 text-violet-400" />
+                                    Recent Notifications
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                {notifications.length === 0 ? (
+                                    <p className="text-slate-500 text-center py-8">No notifications</p>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {notifications.slice(0, 5).map((notif) => (
+                                            <div
+                                                key={notif.id}
+                                                className={`p-3 rounded-lg transition-all cursor-pointer ${
+                                                    notif.read ? 'bg-slate-800/30' : 'bg-violet-500/10 border border-violet-500/30'
+                                                }`}
+                                                onClick={() => !notif.read && markNotificationRead(notif.id)}
+                                            >
+                                                <div className="flex items-start justify-between">
+                                                    <div>
+                                                        <p className="text-white font-medium">{notif.title}</p>
+                                                        <p className="text-slate-400 text-sm">{notif.message}</p>
+                                                    </div>
+                                                    {!notif.read && (
+                                                        <span className="w-2 h-2 rounded-full bg-violet-400" />
+                                                    )}
+                                                </div>
+                                                <p className="text-slate-500 text-xs mt-2">
+                                                    {new Date(notif.timestamp).toLocaleString()}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    </div>
+                )}
+
+                {/* Notifications Tab */}
+                {activeTab === 'notifications' && (
+                    <Card className="bg-slate-900/50 border-slate-700">
+                        <CardHeader className="flex flex-row items-center justify-between">
+                            <CardTitle className="text-white">All Notifications</CardTitle>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-slate-600"
+                                onClick={async () => {
+                                    await fetch('/api/notifications', {
+                                        method: 'PATCH',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ markAllRead: true }),
+                                    });
+                                    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                                }}
+                            >
+                                Mark All Read
+                            </Button>
+                        </CardHeader>
+                        <CardContent>
+                            {notifications.length === 0 ? (
+                                <p className="text-slate-500 text-center py-12">No notifications yet</p>
+                            ) : (
+                                <div className="space-y-3">
+                                    {notifications.map((notif) => (
+                                        <div
+                                            key={notif.id}
+                                            className={`p-4 rounded-lg transition-all ${
+                                                notif.read ? 'bg-slate-800/30' : 'bg-violet-500/10 border border-violet-500/30'
+                                            }`}
+                                        >
+                                            <div className="flex items-start justify-between">
+                                                <div className="flex-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <p className="text-white font-medium">{notif.title}</p>
+                                                        {!notif.read && (
+                                                            <span className="px-2 py-0.5 rounded-full text-xs bg-violet-500/30 text-violet-300">New</span>
+                                                        )}
+                                                    </div>
+                                                    <p className="text-slate-400 mt-1">{notif.message}</p>
+                                                    <p className="text-slate-500 text-sm mt-2">
+                                                        {new Date(notif.timestamp).toLocaleString()}
+                                                    </p>
+                                                </div>
+                                                {notif.referenceId && (
+                                                    <Link href={`/meetings/room/${notif.referenceId}`}>
+                                                        <Button size="sm" className="bg-violet-600 hover:bg-violet-700">
+                                                            View Meeting
+                                                        </Button>
+                                                    </Link>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                )}
+            </div>
         </div>
     );
 }
