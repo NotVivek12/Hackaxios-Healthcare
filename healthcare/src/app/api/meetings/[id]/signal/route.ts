@@ -7,17 +7,30 @@ import Meeting from '@/models/Meeting';
 export const runtime = 'nodejs';
 
 // Store active signaling sessions in memory (in production, use Redis)
-const signalingStore = new Map<string, {
+interface SignalEntry {
+    oderId: string;
+    odername: string;
+    signal: any;
+    timestamp: number;
+}
+
+interface RoomData {
     participants: Map<string, {
-        userId: string;
+        oderId: string;
         role: string;
-        socketId?: string;
+        // For native WebRTC
         offer?: RTCSessionDescriptionInit;
         answer?: RTCSessionDescriptionInit;
         iceCandidates: RTCIceCandidateInit[];
     }>;
+    // For simple-peer: signals waiting to be delivered to each user
+    pendingSignals: Map<string, SignalEntry[]>;
+    // Store all signals for late joiners
+    allSignals: SignalEntry[];
     createdAt: Date;
-}>();
+}
+
+const signalingStore = new Map<string, RoomData>();
 
 // Clean up old sessions every 5 minutes
 setInterval(() => {
@@ -29,7 +42,19 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
-async function verifyMeetingAccess(meetingId: string, userId: string, userRole: string) {
+function getOrCreateRoom(meetingId: string): RoomData {
+    if (!signalingStore.has(meetingId)) {
+        signalingStore.set(meetingId, {
+            participants: new Map(),
+            pendingSignals: new Map(),
+            allSignals: [],
+            createdAt: new Date()
+        });
+    }
+    return signalingStore.get(meetingId)!;
+}
+
+async function verifyMeetingAccess(meetingId: string, oderId: string, userRole: string) {
     await connectDB();
     
     let meeting = await Meeting.findById(meetingId);
@@ -38,8 +63,8 @@ async function verifyMeetingAccess(meetingId: string, userId: string, userRole: 
     if (!meeting && meetingId === '507f1f77bcf86cd799439011') {
         meeting = {
             _id: meetingId,
-            patientId: userRole === 'patient' ? userId : '507f1f77bcf86cd799439012',
-            doctorId: userRole === 'provider' ? userId : '507f1f77bcf86cd799439013',
+            patientId: userRole === 'patient' ? oderId : '507f1f77bcf86cd799439012',
+            doctorId: userRole === 'provider' ? oderId : '507f1f77bcf86cd799439013',
             type: 'video',
             status: 'active',
             scheduledFor: new Date(),
@@ -51,8 +76,8 @@ async function verifyMeetingAccess(meetingId: string, userId: string, userRole: 
         return { meeting: null, isAuthorized: false };
     }
 
-    const isAuthorized = meeting.patientId.toString() === userId || 
-                       meeting.doctorId.toString() === userId;
+    const isAuthorized = meeting.patientId.toString() === oderId || 
+                       meeting.doctorId.toString() === oderId;
     
     return { meeting, isAuthorized };
 }
@@ -67,10 +92,11 @@ export async function GET(
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
+        const oderId = session.user.id;
         const { id: meetingId } = await params;
         const { meeting, isAuthorized } = await verifyMeetingAccess(
             meetingId, 
-            session.user.id, 
+            oderId, 
             session.user.role || 'patient'
         );
         
@@ -82,40 +108,54 @@ export async function GET(
             return NextResponse.json({ error: 'Access denied' }, { status: 403 });
         }
 
-        // Get or create signaling room
-        if (!signalingStore.has(meetingId)) {
-            signalingStore.set(meetingId, {
-                participants: new Map(),
-                createdAt: new Date()
-            });
-        }
-
-        const room = signalingStore.get(meetingId)!;
-        const userRole = meeting.patientId.toString() === session.user.id ? 'patient' : 'doctor';
+        const room = getOrCreateRoom(meetingId);
+        const userRole = meeting.patientId.toString() === oderId ? 'patient' : 'provider';
         
         // Add user to room if not already present
-        if (!room.participants.has(session.user.id)) {
-            room.participants.set(session.user.id, {
-                userId: session.user.id,
+        if (!room.participants.has(oderId)) {
+            room.participants.set(oderId, {
+                oderId: oderId,
                 role: userRole,
                 iceCandidates: []
             });
+            // Initialize pending signals for this user
+            room.pendingSignals.set(oderId, []);
+            
+            // When a user joins, give them any existing signals from others
+            const existingSignals = room.allSignals.filter(s => s.oderId !== oderId);
+            if (existingSignals.length > 0) {
+                room.pendingSignals.set(oderId, [...existingSignals]);
+                console.log(`📥 User ${oderId} joining, found ${existingSignals.length} existing signals`);
+            }
         }
 
-        // Return current room state
+        // Get pending signals for this user and clear them
+        const pendingSignals = room.pendingSignals.get(oderId) || [];
+        room.pendingSignals.set(oderId, []);
+
+        // Format signals for simple-peer compatibility
+        const signals = pendingSignals.map(s => ({
+            oderId: s.oderId,
+            signal: s.signal
+        }));
+
+        // Return room state
         const participants = Array.from(room.participants.values()).map(p => ({
-            userId: p.userId,
+            oderId: p.oderId,
             role: p.role,
             hasOffer: !!p.offer,
             hasAnswer: !!p.answer,
             iceCandidatesCount: p.iceCandidates.length
         }));
 
+        console.log(`📥 GET /signal for ${oderId} (${userRole}): returning ${signals.length} signals`);
+
         return NextResponse.json({
             roomId: meetingId,
             participants,
             userRole,
-            isReady: participants.length >= 2
+            isReady: participants.length >= 2,
+            signals // This is what simple-peer expects!
         });
 
     } catch (error) {
@@ -134,12 +174,14 @@ export async function POST(
             return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
         }
 
+        const oderId = session.user.id;
+        const odername = session.user.name || 'Unknown';
         const { id: meetingId } = await params;
         const data = await request.json();
         
         const { meeting, isAuthorized } = await verifyMeetingAccess(
             meetingId, 
-            session.user.id, 
+            oderId, 
             session.user.role || 'patient'
         );
         
@@ -151,58 +193,108 @@ export async function POST(
             return NextResponse.json({ error: 'Access denied' }, { status: 403 });
         }
 
-        // Get or create signaling room
-        if (!signalingStore.has(meetingId)) {
-            signalingStore.set(meetingId, {
-                participants: new Map(),
-                createdAt: new Date()
-            });
-        }
-
-        const room = signalingStore.get(meetingId)!;
-        const userRole = meeting.patientId.toString() === session.user.id ? 'patient' : 'doctor';
+        const room = getOrCreateRoom(meetingId);
+        const userRole = meeting.patientId.toString() === oderId ? 'patient' : 'provider';
         
         // Ensure user is in room
-        if (!room.participants.has(session.user.id)) {
-            room.participants.set(session.user.id, {
-                userId: session.user.id,
+        if (!room.participants.has(oderId)) {
+            room.participants.set(oderId, {
+                oderId: oderId,
                 role: userRole,
                 iceCandidates: []
             });
+            room.pendingSignals.set(oderId, []);
         }
 
-        const participant = room.participants.get(session.user.id)!;
+        const participant = room.participants.get(oderId)!;
 
-        // Handle different signaling message types
+        console.log(`📤 POST /signal from ${oderId} (${userRole}), type: ${data.type || 'signal'}`);
+
+        // Handle simple-peer signal (has 'signal' property)
+        if (data.signal) {
+            const signalEntry: SignalEntry = {
+                oderId: oderId,
+                odername: odername,
+                signal: data.signal,
+                timestamp: Date.now()
+            };
+            
+            // Store in allSignals for late joiners
+            room.allSignals.push(signalEntry);
+            
+            // Add to pending signals for ALL other participants
+            for (const [participantId] of room.participants) {
+                if (participantId !== oderId) {
+                    if (!room.pendingSignals.has(participantId)) {
+                        room.pendingSignals.set(participantId, []);
+                    }
+                    room.pendingSignals.get(participantId)!.push(signalEntry);
+                    console.log(`📨 Queued signal for ${participantId}`);
+                }
+            }
+            
+            return NextResponse.json({ success: true });
+        }
+
+        // Handle native WebRTC message types
         switch (data.type) {
             case 'offer':
-                participant.offer = data.offer;
+                if (data.offer) {
+                    participant.offer = data.offer;
+                    console.log(`📤 Stored native WebRTC offer from ${userRole}`);
+                }
                 break;
             
             case 'answer':
-                participant.answer = data.answer;
+                if (data.answer) {
+                    participant.answer = data.answer;
+                    console.log(`📤 Stored native WebRTC answer from ${userRole}`);
+                }
                 break;
             
             case 'ice-candidate':
-                participant.iceCandidates.push(data.candidate);
+                if (data.candidate) {
+                    participant.iceCandidates.push(data.candidate);
+                    console.log(`🧊 Stored ICE candidate from ${userRole}`);
+                }
                 break;
             
-            case 'get-offer':
-                // Return the other participant's offer
-                const otherParticipantForOffer = Array.from(room.participants.values())
-                    .find(p => p.userId !== session.user.id);
-                if (otherParticipantForOffer?.offer) {
-                    return NextResponse.json({ offer: otherParticipantForOffer.offer });
+            case 'poll':
+                // Return the other participant's native WebRTC signaling data
+                const otherPoll = Array.from(room.participants.values())
+                    .find(p => p.oderId !== oderId);
+                
+                const pollResponse: any = { success: true };
+                
+                if (otherPoll) {
+                    if (otherPoll.offer) {
+                        pollResponse.offer = otherPoll.offer;
+                    }
+                    if (otherPoll.answer) {
+                        pollResponse.answer = otherPoll.answer;
+                    }
+                    if (otherPoll.iceCandidates.length > 0) {
+                        pollResponse.iceCandidates = [...otherPoll.iceCandidates];
+                        otherPoll.iceCandidates = [];
+                    }
                 }
-                return NextResponse.json({ offer: null });
+                
+                return NextResponse.json(pollResponse);
             
-            default:
-                return NextResponse.json({ error: 'Invalid message type' }, { status: 400 });
+            case 'get-offer':
+                const otherForOffer = Array.from(room.participants.values())
+                    .find(p => p.oderId !== oderId);
+                return NextResponse.json({ offer: otherForOffer?.offer || null });
+            
+            case 'get-answer':
+                const otherForAnswer = Array.from(room.participants.values())
+                    .find(p => p.oderId !== oderId);
+                return NextResponse.json({ answer: otherForAnswer?.answer || null });
         }
 
-        // Get the other participant's data to send back
+        // Return any pending data from other participants
         const otherParticipant = Array.from(room.participants.values())
-            .find(p => p.userId !== session.user.id);
+            .find(p => p.oderId !== oderId);
 
         const response: any = { success: true };
 
@@ -214,9 +306,8 @@ export async function POST(
                 response.offer = otherParticipant.offer;
             }
             if (otherParticipant.iceCandidates.length > 0) {
-                response.iceCandidates = otherParticipant.iceCandidates;
-                // Clear sent candidates
-                otherParticipant.iceCandidates.length = 0;
+                response.iceCandidates = [...otherParticipant.iceCandidates];
+                otherParticipant.iceCandidates = [];
             }
         }
 

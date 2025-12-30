@@ -117,25 +117,43 @@ export default function MeetingRoomPage() {
             const response = await fetch(`/api/meetings/${meetingId}/signal`);
             if (response.ok) {
                 const data = await response.json();
+                console.log('📥 Poll signals response:', data);
+                
                 if (data.signals && data.signals.length > 0) {
                     for (const sig of data.signals) {
                         if (sig.signal) {
-                            if (peerRef.current) {
-                                // Existing peer - apply signal
+                            console.log('📥 Received signal:', sig.signal.type || 'unknown');
+                            
+                            if (peerRef.current && !peerRef.current.destroyed) {
+                                // Existing peer - apply signal (for answer signals)
                                 try {
+                                    console.log('📥 Applying signal to existing peer');
                                     peerRef.current.signal(sig.signal);
-                                } catch (e) {
-                                    console.error('Error applying signal:', e);
+                                } catch (e: any) {
+                                    // Ignore "cannot signal after peer is destroyed" errors
+                                    if (!e.message?.includes('destroyed')) {
+                                        console.error('Error applying signal:', e);
+                                    }
                                 }
-                            } else if (localStreamRef.current) {
-                                // No peer yet - create answer peer
+                            } else if (localStreamRef.current && !peerRef.current) {
+                                // No peer yet - this is an incoming call, create answer peer
+                                console.log('📥 Creating answer peer for incoming signal');
                                 const peer = new Peer({
                                     initiator: false,
                                     trickle: false,
                                     stream: localStreamRef.current,
+                                    config: {
+                                        iceServers: [
+                                            { urls: 'stun:stun.l.google.com:19302' },
+                                            { urls: 'stun:stun1.l.google.com:19302' },
+                                            { urls: 'stun:stun2.l.google.com:19302' },
+                                            { urls: 'stun:stun3.l.google.com:19302' }
+                                        ]
+                                    }
                                 });
 
                                 peer.on('signal', async (answerData) => {
+                                    console.log('📤 Sending answer signal');
                                     try {
                                         await fetch(`/api/meetings/${meetingId}/signal`, {
                                             method: 'POST',
@@ -151,6 +169,7 @@ export default function MeetingRoomPage() {
                                 });
 
                                 peer.on('stream', (stream) => {
+                                    console.log('🎥 Received remote stream!');
                                     if (remoteVideoRef.current) {
                                         remoteVideoRef.current.srcObject = stream;
                                     }
@@ -159,6 +178,7 @@ export default function MeetingRoomPage() {
                                 });
 
                                 peer.on('connect', () => {
+                                    console.log('✅ Peer connected!');
                                     setConnectionStatus('connected');
                                 });
 
@@ -167,9 +187,17 @@ export default function MeetingRoomPage() {
                                     setConnectionStatus('failed');
                                 });
 
+                                peer.on('close', () => {
+                                    console.log('🔌 Peer connection closed');
+                                    setRemoteConnected(false);
+                                });
+
+                                // Apply the incoming signal
                                 peer.signal(sig.signal);
                                 peerRef.current = peer;
                                 setIsInCall(true);
+                            } else {
+                                console.log('⚠️ Received signal but no local stream ready');
                             }
                         }
                     }
@@ -182,8 +210,11 @@ export default function MeetingRoomPage() {
 
     // Start signal polling when in call or when meeting is loaded (to receive incoming calls)
     useEffect(() => {
-        if (meeting && (isInCall || meeting.status === 'active')) {
-            pollingRef.current = setInterval(pollSignals, 1500);
+        if (meeting && isInCall) {
+            // Poll immediately
+            pollSignals();
+            // Then continue polling
+            pollingRef.current = setInterval(pollSignals, 1000); // Poll faster - every 1 second
         }
         return () => {
             if (pollingRef.current) {
@@ -195,11 +226,20 @@ export default function MeetingRoomPage() {
     // Cleanup on unmount
     useEffect(() => {
         return () => {
+            // Stop polling first
+            if (pollingRef.current) {
+                clearInterval(pollingRef.current);
+                pollingRef.current = null;
+            }
+            // Then stop media tracks
             if (localStreamRef.current) {
                 localStreamRef.current.getTracks().forEach(track => track.stop());
+                localStreamRef.current = null;
             }
-            if (peerRef.current) {
+            // Finally destroy peer
+            if (peerRef.current && !peerRef.current.destroyed) {
                 peerRef.current.destroy();
+                peerRef.current = null;
             }
         };
     }, []);
@@ -214,13 +254,24 @@ export default function MeetingRoomPage() {
     const initiateCall = useCallback(() => {
         if (!localStreamRef.current || !meeting) return;
 
+        console.log('📞 Initiating call as initiator...');
+        
         const peer = new Peer({
             initiator: true,
             trickle: false,
             stream: localStreamRef.current,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' }
+                ]
+            }
         });
 
         peer.on('signal', async (data) => {
+            console.log('📤 Sending offer signal');
             // Send signal via HTTP instead of socket
             try {
                 await fetch(`/api/meetings/${meetingId}/signal`, {
@@ -238,6 +289,7 @@ export default function MeetingRoomPage() {
         });
 
         peer.on('stream', (stream) => {
+            console.log('🎥 Received remote stream!');
             if (remoteVideoRef.current) {
                 remoteVideoRef.current.srcObject = stream;
             }
@@ -246,6 +298,7 @@ export default function MeetingRoomPage() {
         });
 
         peer.on('connect', () => {
+            console.log('✅ Peer connected!');
             setConnectionStatus('connected');
         });
 
@@ -254,8 +307,13 @@ export default function MeetingRoomPage() {
             setConnectionStatus('failed');
         });
 
+        peer.on('close', () => {
+            console.log('🔌 Peer connection closed');
+            setRemoteConnected(false);
+        });
+
         peerRef.current = peer;
-    }, [meeting, session, meetingId]);
+    }, [meeting, meetingId]);
 
     const startCall = async () => {
         try {
@@ -264,6 +322,7 @@ export default function MeetingRoomPage() {
                 video: meeting?.type === 'video',
             };
 
+            console.log('📞 Starting call, getting user media...');
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
             localStreamRef.current = stream;
 
@@ -280,8 +339,21 @@ export default function MeetingRoomPage() {
                 body: JSON.stringify({ status: 'active' }),
             });
 
-            // Initiate call
-            initiateCall();
+            // First, check if there are already pending signals (someone already initiated)
+            console.log('📥 Checking for existing signals...');
+            const signalResponse = await fetch(`/api/meetings/${meetingId}/signal`);
+            const signalData = await signalResponse.json();
+            
+            if (signalData.signals && signalData.signals.length > 0) {
+                // Someone already sent a signal, we should answer instead of initiating
+                console.log('📥 Found existing signal, will answer instead of initiating');
+                // The pollSignals will handle creating the answer peer
+                await pollSignals();
+            } else {
+                // No existing signals, we initiate the call
+                console.log('📤 No existing signals, initiating call...');
+                initiateCall();
+            }
         } catch (err) {
             console.error('Error starting call:', err);
             setError('Failed to access camera/microphone');
@@ -289,15 +361,27 @@ export default function MeetingRoomPage() {
     };
 
     const endCall = async () => {
+        // Stop polling first
+        if (pollingRef.current) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+        }
+        
+        // Stop media tracks
         if (localStreamRef.current) {
             localStreamRef.current.getTracks().forEach(track => track.stop());
+            localStreamRef.current = null;
         }
-        if (peerRef.current) {
+        
+        // Destroy peer if not already destroyed
+        if (peerRef.current && !peerRef.current.destroyed) {
             peerRef.current.destroy();
             peerRef.current = null;
         }
+        
         setIsInCall(false);
         setRemoteConnected(false);
+        setConnectionStatus('idle');
 
         // Update meeting status
         await fetch(`/api/meetings/${meetingId}`, {

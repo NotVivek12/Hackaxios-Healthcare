@@ -49,15 +49,21 @@ export const EnhancedVideoCall = ({
     const remoteVideo = useRef<HTMLVideoElement>(null);
     const peerConnection = useRef<RTCPeerConnection | null>(null);
     const signalingInterval = useRef<NodeJS.Timeout | null>(null);
+    const hasCreatedAnswer = useRef<boolean>(false);
 
-    // WebRTC Configuration
+    // WebRTC Configuration with multiple STUN servers for better connectivity
     const rtcConfig: RTCConfiguration = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' }
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:stun.stunprotocol.org:3478' }
         ],
-        iceCandidatePoolSize: 10
+        iceCandidatePoolSize: 10,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require'
     };
 
     // Initialize local media stream
@@ -91,20 +97,24 @@ export const EnhancedVideoCall = ({
 
     // Create peer connection
     const createPeerConnection = useCallback((stream: MediaStream) => {
+        console.log('🔗 Creating peer connection...');
         const pc = new RTCPeerConnection(rtcConfig);
 
         // Add local stream tracks
         stream.getTracks().forEach(track => {
+            console.log(`➕ Adding ${track.kind} track to peer connection`);
             pc.addTrack(track, stream);
         });
 
         // Handle remote stream
         pc.ontrack = (event) => {
-            console.log('Received remote track:', event.track.kind);
+            console.log('🎥 Received remote track:', event.track.kind);
             const [remoteStream] = event.streams;
+            console.log('🎥 Setting remote stream with tracks:', remoteStream.getTracks().length);
             setRemoteStream(remoteStream);
             if (remoteVideo.current) {
                 remoteVideo.current.srcObject = remoteStream;
+                console.log('🎥 Remote video element updated');
             }
             setParticipantConnected(true);
         };
@@ -112,7 +122,7 @@ export const EnhancedVideoCall = ({
         // Handle ICE candidates
         pc.onicecandidate = async (event) => {
             if (event.candidate) {
-                console.log('Sending ICE candidate');
+                console.log('🧊 Sending ICE candidate:', event.candidate.type);
                 try {
                     await fetch(`/api/meetings/${consultationId}/signal`, {
                         method: 'POST',
@@ -123,26 +133,31 @@ export const EnhancedVideoCall = ({
                         })
                     });
                 } catch (err) {
-                    console.error('Error sending ICE candidate:', err);
+                    console.error('❌ Error sending ICE candidate:', err);
                 }
+            } else {
+                console.log('🧊 ICE gathering complete');
             }
         };
 
         // Handle connection state changes
         pc.onconnectionstatechange = () => {
-            console.log('Connection state:', pc.connectionState);
+            console.log('🔗 Connection state changed:', pc.connectionState);
             setConnectionState(pc.connectionState as any);
             
             switch (pc.connectionState) {
                 case 'connected':
+                    console.log('✅ Peer connection established!');
                     setConnectionQuality('excellent');
                     setParticipantConnected(true);
                     break;
                 case 'connecting':
+                    console.log('🔄 Connecting to peer...');
                     setConnectionQuality('good');
                     break;
                 case 'disconnected':
                 case 'failed':
+                    console.log('❌ Peer connection failed/disconnected');
                     setConnectionQuality('poor');
                     setParticipantConnected(false);
                     break;
@@ -151,7 +166,12 @@ export const EnhancedVideoCall = ({
 
         // Handle ICE connection state
         pc.oniceconnectionstatechange = () => {
-            console.log('ICE connection state:', pc.iceConnectionState);
+            console.log('🧊 ICE connection state:', pc.iceConnectionState);
+        };
+
+        // Handle signaling state
+        pc.onsignalingstatechange = () => {
+            console.log('📡 Signaling state:', pc.signalingState);
         };
 
         return pc;
@@ -164,20 +184,22 @@ export const EnhancedVideoCall = ({
         try {
             setConnectionState('connecting');
             
-            // Create peer connection
+            // Create peer connection for both provider and patient
             const pc = createPeerConnection(localStream);
             peerConnection.current = pc;
 
             // Check if we should create offer (doctor initiates)
             if (isProvider) {
-                console.log('Creating offer as provider');
+                console.log('👨‍⚕️ Doctor creating offer...');
                 const offer = await pc.createOffer({
                     offerToReceiveAudio: true,
                     offerToReceiveVideo: true
                 });
+                
+                console.log('📤 Setting local description (offer)');
                 await pc.setLocalDescription(offer);
 
-                // Send offer to signaling server
+                console.log('📤 Sending offer to signaling server');
                 const response = await fetch(`/api/meetings/${consultationId}/signal`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -188,10 +210,14 @@ export const EnhancedVideoCall = ({
                 });
 
                 const data = await response.json();
+                console.log('📤 Offer sent, response:', data);
+                
                 if (data.answer) {
-                    console.log('Received answer');
+                    console.log('📥 Received immediate answer');
                     await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                 }
+            } else {
+                console.log('🧑‍🦱 Patient peer connection ready, waiting for offer from doctor...');
             }
 
             // Start polling for signaling messages
@@ -211,59 +237,77 @@ export const EnhancedVideoCall = ({
 
         signalingInterval.current = setInterval(async () => {
             try {
-                const response = await fetch(`/api/meetings/${consultationId}/signal`);
+                // First, get current state including ICE candidates
+                const response = await fetch(`/api/meetings/${consultationId}/signal`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'poll' })
+                });
                 const data = await response.json();
 
-                if (!peerConnection.current) return;
+                if (!peerConnection.current) {
+                    console.log('⏳ Peer connection not ready yet, waiting...');
+                    return;
+                }
 
-                // Handle incoming offer (patient receives)
-                if (data.participants && !isProvider) {
-                    const providerParticipant = data.participants.find((p: any) => p.role === 'doctor');
-                    if (providerParticipant?.hasOffer && !peerConnection.current.remoteDescription) {
-                        // Get the offer
-                        const offerResponse = await fetch(`/api/meetings/${consultationId}/signal`, {
+                console.log('🔄 Signaling poll response:', data, 'signalingState:', peerConnection.current.signalingState);
+
+                // Handle incoming offer (patient receives) - only if we haven't processed an offer yet
+                if (!isProvider && data.offer && !hasCreatedAnswer.current && peerConnection.current.signalingState === 'stable') {
+                    console.log('📥 Patient receiving offer from doctor');
+                    hasCreatedAnswer.current = true; // Prevent duplicate answer creation
+                    try {
+                        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.offer));
+                        
+                        console.log('📤 Creating answer');
+                        const answer = await peerConnection.current.createAnswer();
+                        await peerConnection.current.setLocalDescription(answer);
+                        
+                        // Send answer back
+                        await fetch(`/api/meetings/${consultationId}/signal`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ type: 'get-offer' })
+                            body: JSON.stringify({
+                                type: 'answer',
+                                answer: answer
+                            })
                         });
-                        
-                        const offerData = await offerResponse.json();
-                        if (offerData.offer) {
-                            console.log('Received offer, creating answer');
-                            await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offerData.offer));
-                            
-                            const answer = await peerConnection.current.createAnswer();
-                            await peerConnection.current.setLocalDescription(answer);
-                            
-                            // Send answer
-                            await fetch(`/api/meetings/${consultationId}/signal`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    type: 'answer',
-                                    answer: answer
-                                })
-                            });
-                        }
+                        console.log('📤 Answer sent');
+                    } catch (err) {
+                        console.error('❌ Error handling offer:', err);
+                        hasCreatedAnswer.current = false; // Reset on error to allow retry
                     }
                 }
 
-                // Handle ICE candidates
-                if (data.iceCandidates && data.iceCandidates.length > 0) {
+                // Handle incoming answer (doctor receives)
+                if (isProvider && data.answer && peerConnection.current.signalingState === 'have-local-offer') {
+                    console.log('📥 Doctor receiving answer from patient');
+                    try {
+                        await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        console.log('✅ Remote description set successfully');
+                    } catch (err) {
+                        console.error('❌ Error setting remote description:', err);
+                    }
+                }
+
+                // Handle ICE candidates - only add after remote description is set
+                if (data.iceCandidates && data.iceCandidates.length > 0 && peerConnection.current.remoteDescription) {
+                    console.log(`🧊 Adding ${data.iceCandidates.length} ICE candidates`);
                     for (const candidate of data.iceCandidates) {
                         try {
-                            await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
-                            console.log('Added ICE candidate');
+                            if (candidate) {
+                                await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+                            }
                         } catch (err) {
-                            console.error('Error adding ICE candidate:', err);
+                            console.error('❌ Error adding ICE candidate:', err);
                         }
                     }
                 }
 
             } catch (err) {
-                console.error('Signaling polling error:', err);
+                console.error('❌ Signaling polling error:', err);
             }
-        }, 2000); // Poll every 2 seconds
+        }, 1000); // Poll every 1 second for faster connection
     }, [consultationId, isProvider]);
 
     // Initialize everything when consultation starts
@@ -271,9 +315,16 @@ export const EnhancedVideoCall = ({
         console.log('🎥 Video Call Effect - consultationStarted:', consultationStarted, 'localStream:', !!localStream);
         if (consultationStarted && !localStream) {
             console.log('🎥 Initializing media and signaling...');
+            // Reset the answer flag when starting fresh
+            hasCreatedAnswer.current = false;
             initializeMedia().then(stream => {
                 console.log('🎥 Media initialized, starting signaling in 1 second...');
-                setTimeout(() => startSignaling(), 1000);
+                setTimeout(() => {
+                    startSignaling().catch(err => {
+                        console.error('❌ Signaling failed, retrying in 3 seconds...', err);
+                        setTimeout(() => startSignaling(), 3000);
+                    });
+                }, 1000);
             }).catch(err => {
                 console.error('🎥 Failed to initialize media:', err);
             });
@@ -289,6 +340,7 @@ export const EnhancedVideoCall = ({
     // Cleanup on unmount
     useEffect(() => {
         return () => {
+            hasCreatedAnswer.current = false;
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
             }
@@ -484,11 +536,14 @@ export const EnhancedVideoCall = ({
                 {/* Connection Quality Indicator */}
                 <div className="absolute top-4 left-4 flex items-center space-x-2 bg-black/50 backdrop-blur-sm rounded-lg px-3 py-2">
                     <div className={`w-3 h-3 rounded-full ${
-                        connectionQuality === 'excellent' ? 'bg-green-500' :
-                        connectionQuality === 'good' ? 'bg-yellow-500' : 'bg-red-500'
-                    } animate-pulse`}></div>
+                        connectionState === 'connected' ? 'bg-green-500' :
+                        connectionState === 'connecting' ? 'bg-yellow-500 animate-pulse' : 
+                        participantConnected ? 'bg-green-500' : 'bg-red-500'
+                    } ${connectionState === 'connecting' ? 'animate-pulse' : ''}`}></div>
                     <span className="text-white text-sm font-medium capitalize">
-                        {connectionState === 'connected' ? connectionQuality : connectionState}
+                        {connectionState === 'connected' ? 'Connected' : 
+                         connectionState === 'connecting' ? 'Connecting...' :
+                         participantConnected ? 'Connected' : 'Waiting'}
                     </span>
                 </div>
 
