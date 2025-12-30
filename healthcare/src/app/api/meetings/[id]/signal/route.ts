@@ -14,44 +14,64 @@ interface SignalEntry {
     timestamp: number;
 }
 
+interface Participant {
+    oderId: string;
+    role: string;
+    // For native WebRTC
+    offer?: RTCSessionDescriptionInit;
+    answer?: RTCSessionDescriptionInit;
+    iceCandidates: RTCIceCandidateInit[];
+    // Track if this participant has received an offer/answer
+    hasReceivedOffer?: boolean;
+    hasReceivedAnswer?: boolean;
+}
+
 interface RoomData {
-    participants: Map<string, {
-        oderId: string;
-        role: string;
-        // For native WebRTC
-        offer?: RTCSessionDescriptionInit;
-        answer?: RTCSessionDescriptionInit;
-        iceCandidates: RTCIceCandidateInit[];
-    }>;
+    participants: Map<string, Participant>;
     // For simple-peer: signals waiting to be delivered to each user
     pendingSignals: Map<string, SignalEntry[]>;
-    // Store all signals for late joiners
-    allSignals: SignalEntry[];
     createdAt: Date;
 }
 
 const signalingStore = new Map<string, RoomData>();
 
-// Clean up old sessions every 5 minutes
+// Clean up old sessions every 2 minutes
 setInterval(() => {
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
     for (const [roomId, room] of signalingStore.entries()) {
-        if (room.createdAt < fiveMinutesAgo) {
+        if (room.createdAt < twoMinutesAgo) {
             signalingStore.delete(roomId);
+            console.log(`🗑️ Cleaned up stale room ${roomId}`);
         }
     }
-}, 5 * 60 * 1000);
+}, 60 * 1000);
 
 function getOrCreateRoom(meetingId: string): RoomData {
     if (!signalingStore.has(meetingId)) {
         signalingStore.set(meetingId, {
             participants: new Map(),
             pendingSignals: new Map(),
-            allSignals: [],
             createdAt: new Date()
         });
     }
     return signalingStore.get(meetingId)!;
+}
+
+// Clear room signals when a new call is started (except for the caller's)
+function resetRoomSignals(meetingId: string, callerId: string) {
+    const room = signalingStore.get(meetingId);
+    if (room) {
+        room.pendingSignals.clear();
+        // Reset participant states
+        for (const [, participant] of room.participants) {
+            participant.hasReceivedOffer = false;
+            participant.hasReceivedAnswer = false;
+            participant.offer = undefined;
+            participant.answer = undefined;
+            participant.iceCandidates = [];
+        }
+        console.log(`🔄 Reset signals for room ${meetingId} (new call from ${callerId})`);
+    }
 }
 
 async function verifyMeetingAccess(meetingId: string, oderId: string, userRole: string) {
@@ -116,25 +136,47 @@ export async function GET(
             room.participants.set(oderId, {
                 oderId: oderId,
                 role: userRole,
-                iceCandidates: []
+                iceCandidates: [],
+                hasReceivedOffer: false,
+                hasReceivedAnswer: false
             });
             // Initialize pending signals for this user
             room.pendingSignals.set(oderId, []);
-            
-            // When a user joins, give them any existing signals from others
-            const existingSignals = room.allSignals.filter(s => s.oderId !== oderId);
-            if (existingSignals.length > 0) {
-                room.pendingSignals.set(oderId, [...existingSignals]);
-                console.log(`📥 User ${oderId} joining, found ${existingSignals.length} existing signals`);
-            }
         }
 
+        const participant = room.participants.get(oderId)!;
+        
         // Get pending signals for this user and clear them
         const pendingSignals = room.pendingSignals.get(oderId) || [];
         room.pendingSignals.set(oderId, []);
 
+        // Filter out stale signals (older than 30 seconds) and already received signals
+        const now = Date.now();
+        const filteredSignals = pendingSignals.filter(s => {
+            // Filter out stale signals
+            if (now - s.timestamp > 30000) {
+                console.log(`⏳ Filtering out stale signal (${Math.round((now - s.timestamp) / 1000)}s old)`);
+                return false;
+            }
+            
+            const sigType = s.signal?.type;
+            if (sigType === 'offer' && participant.hasReceivedOffer) {
+                return false; // Already received an offer
+            }
+            if (sigType === 'answer' && participant.hasReceivedAnswer) {
+                return false; // Already received an answer
+            }
+            return true;
+        });
+        
+        // Mark as received
+        filteredSignals.forEach(s => {
+            if (s.signal?.type === 'offer') participant.hasReceivedOffer = true;
+            if (s.signal?.type === 'answer') participant.hasReceivedAnswer = true;
+        });
+
         // Format signals for simple-peer compatibility
-        const signals = pendingSignals.map(s => ({
+        const signals = filteredSignals.map(s => ({
             oderId: s.oderId,
             signal: s.signal
         }));
@@ -148,7 +190,9 @@ export async function GET(
             iceCandidatesCount: p.iceCandidates.length
         }));
 
-        console.log(`📥 GET /signal for ${oderId} (${userRole}): returning ${signals.length} signals`);
+        if (signals.length > 0) {
+            console.log(`📥 GET /signal for ${oderId} (${userRole}): returning ${signals.length} signals`);
+        }
 
         return NextResponse.json({
             roomId: meetingId,
@@ -201,17 +245,27 @@ export async function POST(
             room.participants.set(oderId, {
                 oderId: oderId,
                 role: userRole,
-                iceCandidates: []
+                iceCandidates: [],
+                hasReceivedOffer: false,
+                hasReceivedAnswer: false
             });
             room.pendingSignals.set(oderId, []);
         }
 
         const participant = room.participants.get(oderId)!;
 
-        console.log(`📤 POST /signal from ${oderId} (${userRole}), type: ${data.type || 'signal'}`);
+        console.log(`📤 POST /signal from ${oderId} (${userRole}), type: ${data.type || (data.signal?.type || 'signal')}`);
 
         // Handle simple-peer signal (has 'signal' property)
         if (data.signal) {
+            const signalType = data.signal.type;
+            
+            // If this is a new offer, reset the room signals (new call starting)
+            if (signalType === 'offer') {
+                resetRoomSignals(meetingId, oderId);
+                console.log(`🔄 New offer detected, reset signals for room ${meetingId}`);
+            }
+            
             const signalEntry: SignalEntry = {
                 oderId: oderId,
                 odername: odername,
@@ -219,21 +273,46 @@ export async function POST(
                 timestamp: Date.now()
             };
             
-            // Store in allSignals for late joiners
-            room.allSignals.push(signalEntry);
-            
-            // Add to pending signals for ALL other participants
-            for (const [participantId] of room.participants) {
+            // Add to pending signals for ALL other participants (NO allSignals accumulation)
+            for (const [participantId, p] of room.participants) {
                 if (participantId !== oderId) {
+                    // Skip if recipient already received this type
+                    if (signalType === 'offer' && p.hasReceivedOffer) {
+                        console.log(`⏭️ Skipping offer for ${participantId} - already received`);
+                        continue;
+                    }
+                    if (signalType === 'answer' && p.hasReceivedAnswer) {
+                        console.log(`⏭️ Skipping answer for ${participantId} - already received`);
+                        continue;
+                    }
+                    
                     if (!room.pendingSignals.has(participantId)) {
                         room.pendingSignals.set(participantId, []);
                     }
                     room.pendingSignals.get(participantId)!.push(signalEntry);
-                    console.log(`📨 Queued signal for ${participantId}`);
+                    console.log(`📨 Queued ${signalType || 'signal'} for ${participantId}`);
                 }
             }
             
             return NextResponse.json({ success: true });
+        }
+
+        // Handle 'connected' signal - marks that this user is connected
+        if (data.type === 'connected') {
+            console.log(`✅ User ${oderId} reported connected, clearing pending signals`);
+            room.pendingSignals.set(oderId, []);
+            // Mark both as having received everything
+            participant.hasReceivedOffer = true;
+            participant.hasReceivedAnswer = true;
+            return NextResponse.json({ success: true });
+        }
+
+        // Handle 'reset' signal - clears the room for a fresh call
+        if (data.type === 'reset') {
+            console.log(`🔄 User ${oderId} requested room reset`);
+            // Delete the entire room to start fresh
+            signalingStore.delete(meetingId);
+            return NextResponse.json({ success: true, reset: true });
         }
 
         // Handle native WebRTC message types

@@ -62,6 +62,7 @@ export default function MeetingRoomPage() {
     const peerRef = useRef<Peer.Instance | null>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const pollingRef = useRef<NodeJS.Timeout | null>(null);
+    const isConnectedRef = useRef(false);
     const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'failed'>('idle');
 
     // Fetch meeting details
@@ -112,20 +113,41 @@ export default function MeetingRoomPage() {
     // Poll for WebRTC signals
     const pollSignals = useCallback(async () => {
         if (!meeting) return;
+        
+        // Don't process more signals once connected
+        if (isConnectedRef.current) {
+            return;
+        }
 
         try {
             const response = await fetch(`/api/meetings/${meetingId}/signal`);
             if (response.ok) {
                 const data = await response.json();
-                console.log('📥 Poll signals response:', data);
+                
+                if (data.signals && data.signals.length > 0) {
+                    console.log('📥 Poll signals response:', data.signals.length, 'signals');
+                }
                 
                 if (data.signals && data.signals.length > 0) {
                     for (const sig of data.signals) {
                         if (sig.signal) {
-                            console.log('📥 Received signal:', sig.signal.type || 'unknown');
+                            const sigType = sig.signal.type || 'unknown';
+                            console.log('📥 Received signal:', sigType);
+                            
+                            // Skip if we're already connected
+                            if (isConnectedRef.current) {
+                                console.log('⏭️ Skipping signal - already connected');
+                                continue;
+                            }
                             
                             if (peerRef.current && !peerRef.current.destroyed) {
                                 // Existing peer - apply signal (for answer signals)
+                                // But skip if it's an offer and we already have a peer
+                                if (sigType === 'offer' && peerRef.current) {
+                                    console.log('⏭️ Skipping offer - already have a peer');
+                                    continue;
+                                }
+                                
                                 try {
                                     console.log('📥 Applying signal to existing peer');
                                     peerRef.current.signal(sig.signal);
@@ -174,12 +196,26 @@ export default function MeetingRoomPage() {
                                         remoteVideoRef.current.srcObject = stream;
                                     }
                                     setRemoteConnected(true);
+                                    isConnectedRef.current = true;
                                     setConnectionStatus('connected');
+                                    // Notify server we're connected
+                                    fetch(`/api/meetings/${meetingId}/signal`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ type: 'connected' }),
+                                    }).catch(() => {});
                                 });
 
                                 peer.on('connect', () => {
                                     console.log('✅ Peer connected!');
+                                    isConnectedRef.current = true;
                                     setConnectionStatus('connected');
+                                    // Notify server we're connected
+                                    fetch(`/api/meetings/${meetingId}/signal`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ type: 'connected' }),
+                                    }).catch(() => {});
                                 });
 
                                 peer.on('error', (err) => {
@@ -190,6 +226,7 @@ export default function MeetingRoomPage() {
                                 peer.on('close', () => {
                                     console.log('🔌 Peer connection closed');
                                     setRemoteConnected(false);
+                                    isConnectedRef.current = false;
                                 });
 
                                 // Apply the incoming signal
@@ -210,6 +247,16 @@ export default function MeetingRoomPage() {
 
     // Start signal polling when in call or when meeting is loaded (to receive incoming calls)
     useEffect(() => {
+        // Stop polling when connected
+        if (isConnectedRef.current || connectionStatus === 'connected') {
+            if (pollingRef.current) {
+                clearInterval(pollingRef.current);
+                pollingRef.current = null;
+                console.log('🛑 Stopped polling - connection established');
+            }
+            return;
+        }
+        
         if (meeting && isInCall) {
             // Poll immediately
             pollSignals();
@@ -221,7 +268,7 @@ export default function MeetingRoomPage() {
                 clearInterval(pollingRef.current);
             }
         };
-    }, [isInCall, meeting, pollSignals]);
+    }, [isInCall, meeting, pollSignals, connectionStatus]);
 
     // Cleanup on unmount
     useEffect(() => {
@@ -294,12 +341,26 @@ export default function MeetingRoomPage() {
                 remoteVideoRef.current.srcObject = stream;
             }
             setRemoteConnected(true);
+            isConnectedRef.current = true;
             setConnectionStatus('connected');
+            // Notify server we're connected
+            fetch(`/api/meetings/${meetingId}/signal`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'connected' }),
+            }).catch(() => {});
         });
 
         peer.on('connect', () => {
             console.log('✅ Peer connected!');
+            isConnectedRef.current = true;
             setConnectionStatus('connected');
+            // Notify server we're connected
+            fetch(`/api/meetings/${meetingId}/signal`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'connected' }),
+            }).catch(() => {});
         });
 
         peer.on('error', (err) => {
@@ -310,6 +371,7 @@ export default function MeetingRoomPage() {
         peer.on('close', () => {
             console.log('🔌 Peer connection closed');
             setRemoteConnected(false);
+            isConnectedRef.current = false;
         });
 
         peerRef.current = peer;
@@ -339,20 +401,37 @@ export default function MeetingRoomPage() {
                 body: JSON.stringify({ status: 'active' }),
             });
 
-            // First, check if there are already pending signals (someone already initiated)
-            console.log('📥 Checking for existing signals...');
+            // First check if anyone else is already in the room
+            console.log('📥 Checking room status...');
             const signalResponse = await fetch(`/api/meetings/${meetingId}/signal`);
             const signalData = await signalResponse.json();
             
-            if (signalData.signals && signalData.signals.length > 0) {
-                // Someone already sent a signal, we should answer instead of initiating
-                console.log('📥 Found existing signal, will answer instead of initiating');
-                // The pollSignals will handle creating the answer peer
+            console.log('📥 Room status:', {
+                participants: signalData.participants?.length || 0,
+                signals: signalData.signals?.length || 0,
+                isReady: signalData.isReady,
+                myRole: signalData.userRole
+            });
+            
+            // Check if there's a fresh offer signal (from another user who just joined)
+            const hasFreshOffer = signalData.signals?.some((s: any) => s.signal?.type === 'offer');
+            
+            if (hasFreshOffer) {
+                // Someone already sent an offer, we should answer
+                console.log('📥 Found offer signal, will answer instead of initiating');
                 await pollSignals();
             } else {
-                // No existing signals, we initiate the call
-                console.log('📤 No existing signals, initiating call...');
-                initiateCall();
+                // Determine who should initiate based on role
+                // Provider (doctor) always initiates, patient always answers
+                const shouldInitiate = signalData.userRole === 'provider';
+                
+                if (shouldInitiate) {
+                    console.log('📤 Initiating call as provider...');
+                    initiateCall();
+                } else {
+                    console.log('⏳ Waiting for provider to initiate (I am patient)...');
+                    // Just start polling - the provider will send an offer
+                }
             }
         } catch (err) {
             console.error('Error starting call:', err);
@@ -382,6 +461,7 @@ export default function MeetingRoomPage() {
         setIsInCall(false);
         setRemoteConnected(false);
         setConnectionStatus('idle');
+        isConnectedRef.current = false;
 
         // Update meeting status
         await fetch(`/api/meetings/${meetingId}`, {
